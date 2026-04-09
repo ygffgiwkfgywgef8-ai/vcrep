@@ -1117,6 +1117,43 @@ async function handleOpenAINonStream(
 }
 
 // ----------------------------------------------------------------------
+// Embeddings route
+// Proxies /v1/embeddings to OpenRouter (model contains "/") or OpenAI.
+// The entire request body is forwarded as-is so non-standard input formats
+// (e.g. multimodal image embeddings for nvidia/llama-nemotron-embed-vl-*)
+// pass through without any transformation.
+// ----------------------------------------------------------------------
+
+router.post("/embeddings", authMiddleware, async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+
+  if (typeof body["model"] !== "string" || !(body["model"] as string).trim()) {
+    res.status(400).json({ error: { message: "'model' must be a non-empty string", type: "invalid_request_error" } });
+    return;
+  }
+  if (body["input"] === undefined || body["input"] === null) {
+    res.status(400).json({ error: { message: "'input' is required", type: "invalid_request_error" } });
+    return;
+  }
+
+  const modelName = body["model"] as string;
+  const client = modelName.includes("/") ? openrouter : openai;
+
+  const ka = startNonStreamKeepalive(res);
+  try {
+    // Cast to any so non-standard multimodal inputs (content arrays) pass through the SDK unchanged.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const response = await client.embeddings.create(body as any);
+    endNonStream(res, response);
+  } catch (err: unknown) {
+    const { status, message } = extractUpstreamError(err);
+    endNonStreamError(res, status, message, "upstream_error");
+  } finally {
+    clearInterval(ka);
+  }
+});
+
+// ----------------------------------------------------------------------
 // Route
 // ----------------------------------------------------------------------
 
