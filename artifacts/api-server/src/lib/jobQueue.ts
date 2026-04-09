@@ -182,6 +182,6 @@ export function parseLastEventId(
   if (colon === -1) return null;
   const jobId = raw.slice(0, colon);
   const idx = parseInt(raw.slice(colon + 1), 10);
-  if (!jobId || Number.isNaN(idx)) return null;
+  if (!jobId || Number.isNaN(idx) || idx < 0) return null;
   return { jobId, lastIdx: idx };
 }

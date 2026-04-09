@@ -273,7 +273,7 @@ async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
     finishJob(job);
 
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Upstream error";
+    const msg = err instanceof Error ? err.message : String(err);
     failJob(job, msg);
   }
 }
@@ -332,7 +332,7 @@ router.get("/:id/stream", authMiddleware, async (req: Request, res: Response) =>
   // Determine resume point from Last-Event-ID header.
   const lastEventId = req.headers["last-event-id"] as string | undefined;
   const resume = parseLastEventId(lastEventId);
-  const fromIdx = (resume?.jobId === job.id) ? (resume.lastIdx + 1) : 0;
+  const fromIdx = Math.max(0, (resume?.jobId === job.id) ? (resume.lastIdx + 1) : 0);
 
   try {
     await streamJobToResponse(res, job, fromIdx);
