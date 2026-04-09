@@ -631,17 +631,24 @@ async function handleClaudeStream(
         } else if (delta.type === "text_delta") {
           sseWrite(res, makeChunk(id, model, { content: delta.text }));
         } else if (delta.type === "input_json_delta") {
-          // Use the mapped OAI tool call index, not the Anthropic content block index
+          // Use the mapped OAI tool call index, not the Anthropic content block index.
+          // B3 fix: guard null/undefined partial_json — can occur on the first delta.
           const toolIdx = blockIdxToToolIdx[idx] ?? 0;
           sseWrite(res, makeChunk(id, model, {
             tool_calls: [{
               index: toolIdx,
-              function: { arguments: delta.partial_json },
+              function: { arguments: delta.partial_json ?? "" },
             }],
           }));
         }
 
       } else if (event.type === "message_delta") {
+        // B2 fix: if the model produced only thinking blocks (no text block ever opened),
+        // the </thinking> closing tag was never emitted — close it now before the final chunk.
+        if (inThinking && thinkingVisible) {
+          sseWrite(res, makeChunk(id, model, { content: "\n</thinking>\n\n" }));
+          inThinking = false;
+        }
         const stopReason = event.delta.stop_reason;
         const finishReason =
           stopReason === "tool_use" ? "tool_calls"
@@ -1203,6 +1210,14 @@ async function handlePromptTools(
   const isGemini = model.startsWith("gemini-");
   const isOpenRouterModel = !isClaude && !isGemini && model.includes("/");
 
+  // B1 fix: when the caller expects SSE, open the connection immediately BEFORE the upstream call.
+  // Without this, the Replit proxy can timeout (300s) on long-running model calls because
+  // no bytes flow to the client until after the upstream finishes.
+  if (stream) {
+    setSseHeaders(res);
+    res.write(": init\n\n");
+  }
+
   try {
     if (isClaude) {
       const { baseModel, thinkingEnabled } = stripClaudeSuffix(model);
@@ -1284,9 +1299,9 @@ async function handlePromptTools(
     const choice = (completion["choices"] as Array<Record<string, unknown>>)[0];
     const finishReason = choice["finish_reason"] as string;
 
-    setSseHeaders(res);
+    // Headers already set + flushed (": init\n\n") before the upstream call — do not call setSseHeaders again.
 
-    if (parsed.isToolCall && parsed.calls) {
+    if (parsed.isToolCall && parsed.calls && parsed.calls.length > 0) {
       // Role chunk
       sseWrite(res, makeChunk(id, model, { role: "assistant", content: null }));
       // Tool call chunks

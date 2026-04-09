@@ -122,17 +122,18 @@ export function parsePromptToolsResponse(raw: string): ParsedPromptToolsResult {
 
     if (parsed["type"] === "tool_calls" && Array.isArray(parsed["calls"])) {
       const calls = parsed["calls"] as Array<{ name?: unknown; parameters?: Record<string, unknown> }>;
-      return {
-        isToolCall: true,
-        calls: calls
-          .filter((c) => typeof c.name === "string" && c.name)
-          .map((c, i) => ({
-            id: `call_pt_${Date.now()}_${i}`,
-            name: c.name as string,
-            arguments: JSON.stringify(c.parameters ?? {}),
-          })),
-        content: "",
-      };
+      // B4 fix: if all call entries are malformed (no valid name), the filtered list is empty.
+      // In that case fall through to text — an empty tool_calls array is an invalid OAI response.
+      const validCalls = calls
+        .filter((c) => typeof c.name === "string" && c.name)
+        .map((c, i) => ({
+          id: `call_pt_${Date.now()}_${i}`,
+          name: c.name as string,
+          arguments: JSON.stringify(c.parameters ?? {}),
+        }));
+      if (validCalls.length > 0) {
+        return { isToolCall: true, calls: validCalls, content: "" };
+      }
     }
 
     if (parsed["type"] === "text" && typeof parsed["content"] === "string") {
