@@ -522,11 +522,13 @@ async function handleClaudeStream(
   // Map Anthropic content-block index -> OAI tool_calls index (0-based among tool_use blocks only)
   const blockIdxToToolIdx: Record<number, number> = {};
   let toolCallCount = 0;
-  let sseBodyStarted = false; // true after first sseWrite (headers have been flushed to wire)
 
+  // NOTE: ": init\n\n" has already been written above, so headers are always committed
+  // before we reach this try block. The catch must always use the SSE error path —
+  // re-throwing into the outer catch would find headersSent=true and send nothing,
+  // leaving the client connection hanging indefinitely.
   const keepaliveInterval = setInterval(() => {
-    sseBodyStarted = true;
-    res.write(": keepalive\n\n");
+    if (!res.writableEnded) res.write(": keepalive\n\n");
   }, 5000);
 
   try {
@@ -536,7 +538,6 @@ async function handleClaudeStream(
       if (event.type === "message_start") {
         // Capture input token count for the final usage report
         inputTokens = event.message.usage?.input_tokens ?? 0;
-        sseBodyStarted = true;
         sseWrite(res, makeChunk(id, model, { role: "assistant", content: "" }));
 
       } else if (event.type === "content_block_start") {
@@ -557,7 +558,6 @@ async function handleClaudeStream(
           // Assign a sequential OAI tool call index (0-based) independent of content block index
           const toolIdx = toolCallCount++;
           blockIdxToToolIdx[idx] = toolIdx;
-          sseBodyStarted = true;
           sseWrite(res, makeChunk(id, model, {
             tool_calls: [{
               index: toolIdx,
@@ -606,31 +606,22 @@ async function handleClaudeStream(
       }
     }
 
-    res.write("data: [DONE]\n\n");
+    if (!res.writableEnded) res.write("data: [DONE]\n\n");
   } catch (streamErr) {
-    if (sseBodyStarted) {
-      // SSE already started -- send an error event so the client knows, then end cleanly
-      try {
-        sseWrite(res, {
-          error: {
-            message: streamErr instanceof Error ? streamErr.message : "Stream error",
-            type: "stream_error",
-          },
-        });
-        res.write("data: [DONE]\n\n");
-      } catch { /* ignore write errors during cleanup */ }
-      // Do NOT re-throw: error was communicated via SSE; let finally handle res.end()
-    } else {
-      // No SSE data written yet -- re-throw so outer catch can send a proper JSON error.
-      // Do NOT call res.end() here; let the outer catch's res.json() do it.
-      clearInterval(keepaliveInterval);
-      throw streamErr;
-    }
+    // Always use the SSE error path here — headers were committed by ": init\n\n" above,
+    // so re-throwing would leave the client connection hanging with no response body.
+    try {
+      sseWrite(res, {
+        error: {
+          message: streamErr instanceof Error ? streamErr.message : "Stream error",
+          type: "stream_error",
+        },
+      });
+      if (!res.writableEnded) res.write("data: [DONE]\n\n");
+    } catch { /* ignore write errors during cleanup */ }
   } finally {
     clearInterval(keepaliveInterval);
-    // End the response only when SSE body was started (success path or mid-stream error).
-    // When !sseBodyStarted we re-threw above and the outer catch handles res.end().
-    if (sseBodyStarted && !res.writableEnded) res.end();
+    if (!res.writableEnded) res.end();
   }
 }
 
@@ -772,7 +763,7 @@ async function handleGeminiStream(
   const id = `chatcmpl-${Date.now()}`;
 
   const keepaliveInterval = setInterval(() => {
-    res.write(": keepalive\n\n");
+    if (!res.writableEnded) res.write(": keepalive\n\n");
   }, 5000);
 
   try {
@@ -815,7 +806,7 @@ async function handleGeminiStream(
       choices: [],
       usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
     });
-    res.write("data: [DONE]\n\n");
+    if (!res.writableEnded) res.write("data: [DONE]\n\n");
   } catch (streamErr) {
     try {
       sseWrite(res, {
@@ -824,7 +815,7 @@ async function handleGeminiStream(
           type: "stream_error",
         },
       });
-      res.write("data: [DONE]\n\n");
+      if (!res.writableEnded) res.write("data: [DONE]\n\n");
     } catch { /* ignore */ }
   } finally {
     clearInterval(keepaliveInterval);
@@ -928,7 +919,7 @@ async function handleOpenRouterStream(
   } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
   const keepaliveInterval = setInterval(() => {
-    res.write(": keepalive\n\n");
+    if (!res.writableEnded) res.write(": keepalive\n\n");
   }, 5000);
 
   try {
@@ -936,7 +927,7 @@ async function handleOpenRouterStream(
     for await (const chunk of stream) {
       sseWrite(res, chunk);
     }
-    res.write("data: [DONE]\n\n");
+    if (!res.writableEnded) res.write("data: [DONE]\n\n");
   } catch (streamErr) {
     try {
       sseWrite(res, {
@@ -945,7 +936,7 @@ async function handleOpenRouterStream(
           type: "stream_error",
         },
       });
-      res.write("data: [DONE]\n\n");
+      if (!res.writableEnded) res.write("data: [DONE]\n\n");
     } catch { /* ignore */ }
   } finally {
     clearInterval(keepaliveInterval);
@@ -1040,7 +1031,7 @@ async function handleOpenAIStream(
   }
 
   const keepaliveInterval = setInterval(() => {
-    res.write(": keepalive\n\n");
+    if (!res.writableEnded) res.write(": keepalive\n\n");
   }, 5000);
 
   try {
@@ -1048,7 +1039,7 @@ async function handleOpenAIStream(
     for await (const chunk of stream) {
       sseWrite(res, chunk);
     }
-    res.write("data: [DONE]\n\n");
+    if (!res.writableEnded) res.write("data: [DONE]\n\n");
   } catch (streamErr) {
     try {
       sseWrite(res, {
@@ -1057,7 +1048,7 @@ async function handleOpenAIStream(
           type: "stream_error",
         },
       });
-      res.write("data: [DONE]\n\n");
+      if (!res.writableEnded) res.write("data: [DONE]\n\n");
     } catch { /* ignore write errors during cleanup */ }
   } finally {
     clearInterval(keepaliveInterval);
