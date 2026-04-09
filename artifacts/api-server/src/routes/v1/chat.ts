@@ -74,7 +74,8 @@ const openrouter = new OpenAI({
 });
 
 // ----------------------------------------------------------------------
-// Claude model config (max_tokens per spec - must not change)
+// Claude hard model maximums (Anthropic API rejects requests that exceed these).
+// Unknown/future models fall back to 200000 -- the API will clamp if lower.
 // ----------------------------------------------------------------------
 const CLAUDE_MAX_TOKENS: Record<string, number> = {
   "claude-haiku-4-5": 8096,
@@ -86,7 +87,12 @@ const CLAUDE_MAX_TOKENS: Record<string, number> = {
 };
 
 function getClaudeMaxTokens(model: string): number {
-  return CLAUDE_MAX_TOKENS[model] ?? 64000;
+  return CLAUDE_MAX_TOKENS[model] ?? 200000;
+}
+
+/** Max thinking budget: as large as possible while leaving at least 1024 for output. */
+function getThinkingBudget(maxTokens: number): number {
+  return Math.max(1024, maxTokens - 1024);
 }
 
 function stripClaudeSuffix(model: string): {
@@ -466,9 +472,9 @@ async function handleClaudeStream(
   const messages = await resolveImageUrls(body.messages);
   const { baseModel, thinkingEnabled, thinkingVisible } = stripClaudeSuffix(model);
   const modelMax = getClaudeMaxTokens(baseModel);
-  const maxTokens = thinkingEnabled
-    ? modelMax
-    : (body.max_tokens && body.max_tokens > 0 ? Math.min(body.max_tokens, modelMax) : modelMax);
+  // Use caller's max_tokens if provided; otherwise use the model's maximum.
+  // No artificial cap -- pass the value straight to Anthropic.
+  const maxTokens = (body.max_tokens && body.max_tokens > 0) ? body.max_tokens : modelMax;
 
   const { system, messages: anthropicMessages } = convertMessagesToAnthropic(messages);
 
@@ -491,7 +497,8 @@ async function handleClaudeStream(
     else if (top_p !== undefined) params["top_p"] = top_p;
     if (stop) params["stop_sequences"] = Array.isArray(stop) ? stop : [stop];
   }
-  if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: Math.min(10000, Math.floor(maxTokens * 0.6)) };
+  // Thinking budget: max possible while leaving at least 1024 tokens for visible output.
+  if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: getThinkingBudget(maxTokens) };
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
 
@@ -626,10 +633,9 @@ async function handleClaudeNonStream(
   const messages = await resolveImageUrls(body.messages);
   const { baseModel, thinkingEnabled, thinkingVisible } = stripClaudeSuffix(model);
   const modelMax = getClaudeMaxTokens(baseModel);
-  // Same logic as streaming: thinking -> model max; otherwise honour caller, default to model max.
-  const maxTokens = thinkingEnabled
-    ? modelMax
-    : (body.max_tokens && body.max_tokens > 0 ? Math.min(body.max_tokens, modelMax) : modelMax);
+  // Use caller's max_tokens if provided; otherwise use the model's maximum.
+  // No artificial cap -- pass the value straight to Anthropic.
+  const maxTokens = (body.max_tokens && body.max_tokens > 0) ? body.max_tokens : modelMax;
 
   const { system, messages: anthropicMessages } = convertMessagesToAnthropic(messages);
 
@@ -653,7 +659,8 @@ async function handleClaudeNonStream(
     else if (top_p !== undefined) params["top_p"] = top_p;
     if (stop) params["stop_sequences"] = Array.isArray(stop) ? stop : [stop];
   }
-  if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: Math.min(10000, Math.floor(maxTokens * 0.6)) };
+  // Thinking budget: max possible while leaving at least 1024 tokens for visible output.
+  if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: getThinkingBudget(maxTokens) };
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
 
@@ -756,7 +763,7 @@ async function handleGeminiStream(
 
   try {
     const config: Record<string, unknown> = {
-      maxOutputTokens: max_tokens ?? 8192,
+      maxOutputTokens: max_tokens ?? 65536,
     };
     if (temperature !== undefined) config["temperature"] = temperature;
     if (top_p !== undefined) config["topP"] = top_p;
@@ -823,7 +830,7 @@ async function handleGeminiNonStream(
   const { systemInstruction, contents } = convertMessagesToGemini(body.messages);
 
   const config: Record<string, unknown> = {
-    maxOutputTokens: max_tokens ?? 8192,
+    maxOutputTokens: max_tokens ?? 65536,
   };
   if (temperature !== undefined) config["temperature"] = temperature;
   if (top_p !== undefined) config["topP"] = top_p;
