@@ -105,65 +105,42 @@ export function getClaudeMaxTokens(model: string): number {
 }
 
 // ----------------------------------------------------------------------
-// OpenRouter reasoning model detection
-//
-// Per OpenRouter docs:
-//   - reasoning.effort  → OpenAI o-series, GPT-5, Grok (effort-native)
-//   - reasoning.max_tokens → Anthropic, Gemini thinking, Qwen thinking,
-//                            DeepSeek R-series (max_tokens-native)
-//
-// OpenRouter normalises cross-model, but using the native format is
-// more reliable and avoids silent mis-mapping.
-// Callers can always override by including "reasoning" in their request.
+// OpenRouter reasoning model detection & defaults
 // ----------------------------------------------------------------------
 
-/** Models that accept reasoning: { effort: "xhigh" } natively */
-const EFFORT_REASONING_MODELS: RegExp[] = [
-  /^openai\/o\d/,           // o1, o3, o4 series
-  /^openai\/gpt-5/,         // GPT-5 series
-  /^x-ai\/grok.*mini/,      // Grok mini reasoning variants
-];
-
-/** Models that accept reasoning: { max_tokens: N } natively */
-const MAX_TOKENS_REASONING_MODELS: RegExp[] = [
-  // Anthropic extended-thinking models
+// All known OpenRouter reasoning models.
+// OpenRouter normalises reasoning: { effort } ↔ reasoning: { max_tokens } across
+// all providers, so using effort: "xhigh" universally avoids hardcoding any token
+// limit while still requesting the maximum available reasoning budget.
+const OPENROUTER_REASONING_MODELS: RegExp[] = [
+  /^openai\/o\d/,               // o1, o3, o4 series
+  /^openai\/gpt-5/,             // GPT-5 series
+  /^x-ai\/grok.*mini/,          // Grok mini reasoning variants
   /^anthropic\/claude-3-7-sonnet/,
   /^anthropic\/claude-opus-4/,
   /^anthropic\/claude-sonnet-4/,
-  // Any model with "thinking" in its name (Gemini :thinking, Qwen-thinking, etc.)
-  /thinking/i,
-  // DeepSeek R-series
-  /^deepseek\/deepseek-r\d/,
+  /thinking/i,                  // Gemini :thinking, Qwen-thinking, etc.
+  /^deepseek\/deepseek-r\d/,    // DeepSeek R-series
 ];
 
-/** Maximum thinking-token budget for max_tokens-style models. */
-const REASONING_MAX_TOKENS = 32000;
-
 export function isOpenRouterReasoningModel(model: string): boolean {
-  return (
-    EFFORT_REASONING_MODELS.some((re) => re.test(model)) ||
-    MAX_TOKENS_REASONING_MODELS.some((re) => re.test(model))
-  );
+  return OPENROUTER_REASONING_MODELS.some((re) => re.test(model));
 }
 
 /**
- * Returns the appropriate reasoning default for the model:
- *   - effort-native  → { reasoning: { effort: "xhigh" } }
- *   - max_tokens-native → { reasoning: { max_tokens: REASONING_MAX_TOKENS } }
- * Returns {} if the caller already provided "reasoning" or model is not a reasoning model.
+ * Returns { reasoning: { effort: "xhigh" } } for all known reasoning models.
+ * OpenRouter normalises effort → max_tokens for providers that require it
+ * (Anthropic, Gemini, etc.), so no token limit is hardcoded.
+ * Returns {} if the caller already provided "reasoning" or the model is not
+ * a recognised reasoning model.
  */
 export function getOpenRouterReasoningDefault(
   model: string,
   passThrough: Record<string, unknown>
 ): Record<string, unknown> {
   if ("reasoning" in passThrough) return {};
-  if (EFFORT_REASONING_MODELS.some((re) => re.test(model))) {
-    return { reasoning: { effort: "xhigh" } };
-  }
-  if (MAX_TOKENS_REASONING_MODELS.some((re) => re.test(model))) {
-    return { reasoning: { max_tokens: REASONING_MAX_TOKENS } };
-  }
-  return {};
+  if (!isOpenRouterReasoningModel(model)) return {};
+  return { reasoning: { effort: "xhigh" } };
 }
 
 /**
