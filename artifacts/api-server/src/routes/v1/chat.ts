@@ -418,6 +418,9 @@ function setSseHeaders(res: Response) {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
+  // Disable Nagle's algorithm so each token chunk is sent to the client immediately
+  // without being buffered/coalesced. This is the primary fix for laggy streaming.
+  res.socket?.setNoDelay(true);
 }
 
 /**
@@ -454,20 +457,21 @@ async function handleClaudeStream(
   res: Response,
   body: ChatBody
 ) {
+  // Establish SSE connection immediately -- before any async work so the client
+  // does not wait for image-URL resolution before the first byte arrives.
+  setSseHeaders(res);
+  res.write(": init\n\n");
+
   const { model, temperature, top_p, stop, tools, tool_choice } = body;
   const messages = await resolveImageUrls(body.messages);
   const { baseModel, thinkingEnabled, thinkingVisible } = stripClaudeSuffix(model);
   const modelMax = getClaudeMaxTokens(baseModel);
-  // Thinking mode: always use model max (thinking tokens + output tokens both count).
-  // Non-thinking: respect caller's max_tokens to honour token budget from main node,
-  // but default to model max when unspecified so output is never truncated.
   const maxTokens = thinkingEnabled
     ? modelMax
     : (body.max_tokens && body.max_tokens > 0 ? Math.min(body.max_tokens, modelMax) : modelMax);
 
   const { system, messages: anthropicMessages } = convertMessagesToAnthropic(messages);
 
-  // When tool_choice is "none", suppress tools entirely (Anthropic has no "none" option)
   const anthropicTools = (tools && tools.length > 0 && tool_choice !== "none")
     ? convertToolsToAnthropic(tools)
     : undefined;
@@ -475,7 +479,6 @@ async function handleClaudeStream(
     ? convertToolChoiceToAnthropic(tool_choice)
     : undefined;
 
-  // Anthropic does not allow temperature / top_p when thinking is enabled
   const params: Record<string, unknown> = {
     model: baseModel,
     max_tokens: maxTokens,
@@ -488,14 +491,9 @@ async function handleClaudeStream(
     else if (top_p !== undefined) params["top_p"] = top_p;
     if (stop) params["stop_sequences"] = Array.isArray(stop) ? stop : [stop];
   }
-  // budget_tokens must leave room for visible output.
-  // Cap at 10 000 and at most 60 % of maxTokens so at least 40 % remains for output.
   if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: Math.min(10000, Math.floor(maxTokens * 0.6)) };
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
-
-  setSseHeaders(res);
-  res.write(": init\n\n"); // flush connection immediately -- prevents proxy timeout before first AI token
 
   const id = `chatcmpl-${Date.now()}`;
   let inThinking = false;
