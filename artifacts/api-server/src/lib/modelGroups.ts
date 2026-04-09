@@ -93,20 +93,32 @@ function mergeWithDefaults(saved: ModelGroup[]): ModelGroup[] {
   });
 }
 
+// ── In-process cache ──────────────────────────────────────────────────────
+// model-groups.json almost never changes at runtime. Caching avoids a
+// synchronous disk read on every /v1/chat/completions and /v1/models request.
+// The cache is invalidated immediately after any write.
+
+let _cache: ModelGroup[] | null = null;
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export function readGroups(): ModelGroup[] {
+  if (_cache) return _cache;
   try {
     const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
     const saved = JSON.parse(raw) as ModelGroup[];
-    return mergeWithDefaults(saved);
+    _cache = mergeWithDefaults(saved);
+    return _cache;
   } catch {
+    // Config missing or corrupt — return defaults without caching so a
+    // subsequent successful write will be picked up on the next request.
     return DEFAULT_GROUPS.map(g => ({ ...g, models: g.models.map(m => ({ ...m })) }));
   }
 }
 
 export function writeGroups(groups: ModelGroup[]): void {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(groups, null, 2), "utf-8");
+  _cache = null; // invalidate so the next read picks up the new config
 }
 
 /** Returns true if the model is allowed to handle requests. */

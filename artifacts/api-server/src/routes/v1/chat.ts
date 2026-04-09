@@ -467,6 +467,21 @@ function endNonStreamError(res: Response, statusCode: number, message: string, t
   }
 }
 
+/**
+ * Extract a human-readable message and HTTP status from an upstream API error.
+ * OpenAI/Anthropic SDK errors carry a numeric `.status` property; all other
+ * thrown values default to 502 Bad Gateway.
+ */
+function extractUpstreamError(err: unknown): { status: number; message: string } {
+  const message = err instanceof Error ? err.message : "Upstream error";
+  const status =
+    err !== null && typeof err === "object" && "status" in err &&
+    typeof (err as { status: unknown }).status === "number"
+      ? Math.max(400, (err as { status: number }).status)
+      : 502;
+  return { status, message };
+}
+
 // ----------------------------------------------------------------------
 // Anthropic - streaming
 // ----------------------------------------------------------------------
@@ -735,10 +750,8 @@ async function handleClaudeNonStream(
       },
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Upstream error";
-    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
-      ? (err as { status: number }).status : 502;
-    endNonStreamError(res, status, msg, "upstream_error");
+    const { status, message } = extractUpstreamError(err);
+    endNonStreamError(res, status, message, "upstream_error");
   } finally {
     clearInterval(ka);
   }
@@ -874,10 +887,8 @@ async function handleGeminiNonStream(
       },
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Upstream error";
-    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
-      ? (err as { status: number }).status : 502;
-    endNonStreamError(res, status, msg, "upstream_error");
+    const { status, message } = extractUpstreamError(err);
+    endNonStreamError(res, status, message, "upstream_error");
   } finally {
     clearInterval(ka);
   }
@@ -977,10 +988,8 @@ async function handleOpenRouterNonStream(
     const response = await openrouter.chat.completions.create(params);
     endNonStream(res, response);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Upstream error";
-    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
-      ? (err as { status: number }).status : 502;
-    endNonStreamError(res, status, msg, "upstream_error");
+    const { status, message } = extractUpstreamError(err);
+    endNonStreamError(res, status, message, "upstream_error");
   } finally {
     clearInterval(ka);
   }
@@ -1100,10 +1109,8 @@ async function handleOpenAINonStream(
     const response = await openai.chat.completions.create(params);
     endNonStream(res, response);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Upstream error";
-    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
-      ? (err as { status: number }).status : 502;
-    endNonStreamError(res, status, msg, "upstream_error");
+    const { status, message } = extractUpstreamError(err);
+    endNonStreamError(res, status, message, "upstream_error");
   } finally {
     clearInterval(ka);
   }
