@@ -106,41 +106,80 @@ export function getClaudeMaxTokens(model: string): number {
 
 // ----------------------------------------------------------------------
 // OpenRouter reasoning model detection
-// Returns true when the model is known to support extended reasoning and
-// should receive reasoning: { effort: "xhigh" } by default.
-// The caller can always override by including "reasoning" in the request.
+//
+// Per OpenRouter docs:
+//   - reasoning.effort  → OpenAI o-series, GPT-5, Grok (effort-native)
+//   - reasoning.max_tokens → Anthropic, Gemini thinking, Qwen thinking,
+//                            DeepSeek R-series (max_tokens-native)
+//
+// OpenRouter normalises cross-model, but using the native format is
+// more reliable and avoids silent mis-mapping.
+// Callers can always override by including "reasoning" in their request.
 // ----------------------------------------------------------------------
-const OPENROUTER_REASONING_PATTERNS: RegExp[] = [
-  // OpenAI o-series and GPT-5
-  /^openai\/o\d/,
-  /^openai\/gpt-5/,
-  // DeepSeek R-series
-  /^deepseek\/deepseek-r\d/,
-  // Any model with "thinking" in its name (Gemini, Qwen, etc.)
-  /thinking/i,
-  // Anthropic models with extended thinking support
+
+/** Models that accept reasoning: { effort: "xhigh" } natively */
+const EFFORT_REASONING_MODELS: RegExp[] = [
+  /^openai\/o\d/,           // o1, o3, o4 series
+  /^openai\/gpt-5/,         // GPT-5 series
+  /^x-ai\/grok.*mini/,      // Grok mini reasoning variants
+];
+
+/** Models that accept reasoning: { max_tokens: N } natively */
+const MAX_TOKENS_REASONING_MODELS: RegExp[] = [
+  // Anthropic extended-thinking models
   /^anthropic\/claude-3-7-sonnet/,
   /^anthropic\/claude-opus-4/,
   /^anthropic\/claude-sonnet-4/,
-  // Grok reasoning variants
-  /^x-ai\/grok-3-mini/,
+  // Any model with "thinking" in its name (Gemini :thinking, Qwen-thinking, etc.)
+  /thinking/i,
+  // DeepSeek R-series
+  /^deepseek\/deepseek-r\d/,
 ];
 
+/** Maximum thinking-token budget for max_tokens-style models. */
+const REASONING_MAX_TOKENS = 32000;
+
 export function isOpenRouterReasoningModel(model: string): boolean {
-  return OPENROUTER_REASONING_PATTERNS.some((re) => re.test(model));
+  return (
+    EFFORT_REASONING_MODELS.some((re) => re.test(model)) ||
+    MAX_TOKENS_REASONING_MODELS.some((re) => re.test(model))
+  );
 }
 
 /**
- * Returns { reasoning: { effort: "xhigh" } } when the model is a reasoning
- * model and the caller has not already included a "reasoning" key.
+ * Returns the appropriate reasoning default for the model:
+ *   - effort-native  → { reasoning: { effort: "xhigh" } }
+ *   - max_tokens-native → { reasoning: { max_tokens: REASONING_MAX_TOKENS } }
+ * Returns {} if the caller already provided "reasoning" or model is not a reasoning model.
  */
-function getOpenRouterReasoningDefault(
+export function getOpenRouterReasoningDefault(
   model: string,
   passThrough: Record<string, unknown>
 ): Record<string, unknown> {
   if ("reasoning" in passThrough) return {};
-  if (!isOpenRouterReasoningModel(model)) return {};
-  return { reasoning: { effort: "xhigh" } };
+  if (EFFORT_REASONING_MODELS.some((re) => re.test(model))) {
+    return { reasoning: { effort: "xhigh" } };
+  }
+  if (MAX_TOKENS_REASONING_MODELS.some((re) => re.test(model))) {
+    return { reasoning: { max_tokens: REASONING_MAX_TOKENS } };
+  }
+  return {};
+}
+
+/**
+ * Returns { verbosity: "max" } for models that support output-level verbosity
+ * control via OpenRouter's verbosity parameter (distinct from reasoning/thinking).
+ * Currently only Claude Opus 4.6 and later support the "max" level.
+ */
+export function getOpenRouterVerbosityDefault(
+  model: string,
+  passThrough: Record<string, unknown>
+): Record<string, unknown> {
+  if ("verbosity" in passThrough) return {};
+  if (/^anthropic\/claude-opus-4\.[6-9]|^anthropic\/claude-opus-[5-9]/.test(model)) {
+    return { verbosity: "max" };
+  }
+  return {};
 }
 
 /** Max thinking budget: as large as possible while leaving at least 1024 for output. */
@@ -1059,12 +1098,16 @@ async function handleOpenRouterStream(
   // extra_headers, etc.) are forwarded transparently to the OpenRouter API.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
-  // For known reasoning models, inject reasoning: { effort: "xhigh" } by default.
-  // Callers can override by including "reasoning" in their request body.
-  const reasoningDefault = getOpenRouterReasoningDefault(body.model, passThrough as Record<string, unknown>);
+  // For known reasoning models, inject the appropriate reasoning default.
+  // For Claude Opus 4.6+, also inject verbosity: "max".
+  // Callers can always override by including these keys in their request body.
+  const pt = passThrough as Record<string, unknown>;
+  const reasoningDefault = getOpenRouterReasoningDefault(body.model, pt);
+  const verbosityDefault = getOpenRouterVerbosityDefault(body.model, pt);
 
   const params = {
     ...reasoningDefault,
+    ...verbosityDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
@@ -1113,12 +1156,16 @@ async function handleOpenRouterNonStream(
   // (provider, transforms, route, cache_control, etc.) pass through untouched.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
-  // For known reasoning models, inject reasoning: { effort: "xhigh" } by default.
-  // Callers can override by including "reasoning" in their request body.
-  const reasoningDefault = getOpenRouterReasoningDefault(body.model, passThrough as Record<string, unknown>);
+  // For known reasoning models, inject the appropriate reasoning default.
+  // For Claude Opus 4.6+, also inject verbosity: "max".
+  // Callers can always override by including these keys in their request body.
+  const pt = passThrough as Record<string, unknown>;
+  const reasoningDefault = getOpenRouterReasoningDefault(body.model, pt);
+  const verbosityDefault = getOpenRouterVerbosityDefault(body.model, pt);
 
   const params = {
     ...reasoningDefault,
+    ...verbosityDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],

@@ -62,7 +62,8 @@ import {
   stripClaudeSuffix,
   getClaudeMaxTokens,
   getThinkingBudget,
-  isOpenRouterReasoningModel,
+  getOpenRouterReasoningDefault,
+  getOpenRouterVerbosityDefault,
   convertMessagesToAnthropic,
   convertMessagesToGemini,
   convertToolsToAnthropic,
@@ -245,14 +246,14 @@ async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
     // ── OpenRouter ────────────────────────────────────────────────────────
     } else if (model.includes("/")) {
       const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
-      // For known reasoning models, inject reasoning: { effort: "xhigh" } by default.
-      // Callers can override by including "reasoning" in their request body.
-      const reasoningDefault =
-        !("reasoning" in passThrough) && isOpenRouterReasoningModel(model)
-          ? { reasoning: { effort: "xhigh" } }
-          : {};
+      // For known reasoning models, inject the appropriate reasoning default.
+      // For Claude Opus 4.6+, also inject verbosity: "max".
+      // Callers can always override by including these keys in their request body.
+      const pt = passThrough as Record<string, unknown>;
+      const reasoningDefault = getOpenRouterReasoningDefault(model, pt);
+      const verbosityDefault = getOpenRouterVerbosityDefault(model, pt);
       const params = {
-        ...reasoningDefault, ...passThrough,
+        ...reasoningDefault, ...verbosityDefault, ...passThrough,
         model,
         messages: messages as OpenAI.ChatCompletionMessageParam[],
         stream: true as const,
