@@ -104,6 +104,45 @@ export function getClaudeMaxTokens(model: string): number {
   return CLAUDE_MAX_TOKENS[model] ?? 200000;
 }
 
+// ----------------------------------------------------------------------
+// OpenRouter reasoning model detection
+// Returns true when the model is known to support extended reasoning and
+// should receive reasoning: { effort: "xhigh" } by default.
+// The caller can always override by including "reasoning" in the request.
+// ----------------------------------------------------------------------
+const OPENROUTER_REASONING_PATTERNS: RegExp[] = [
+  // OpenAI o-series and GPT-5
+  /^openai\/o\d/,
+  /^openai\/gpt-5/,
+  // DeepSeek R-series
+  /^deepseek\/deepseek-r\d/,
+  // Any model with "thinking" in its name (Gemini, Qwen, etc.)
+  /thinking/i,
+  // Anthropic models with extended thinking support
+  /^anthropic\/claude-3-7-sonnet/,
+  /^anthropic\/claude-opus-4/,
+  /^anthropic\/claude-sonnet-4/,
+  // Grok reasoning variants
+  /^x-ai\/grok-3-mini/,
+];
+
+export function isOpenRouterReasoningModel(model: string): boolean {
+  return OPENROUTER_REASONING_PATTERNS.some((re) => re.test(model));
+}
+
+/**
+ * Returns { reasoning: { effort: "xhigh" } } when the model is a reasoning
+ * model and the caller has not already included a "reasoning" key.
+ */
+function getOpenRouterReasoningDefault(
+  model: string,
+  passThrough: Record<string, unknown>
+): Record<string, unknown> {
+  if ("reasoning" in passThrough) return {};
+  if (!isOpenRouterReasoningModel(model)) return {};
+  return { reasoning: { effort: "xhigh" } };
+}
+
 /** Max thinking budget: as large as possible while leaving at least 1024 for output. */
 export function getThinkingBudget(maxTokens: number): number {
   return Math.max(1024, maxTokens - 1024);
@@ -1020,14 +1059,12 @@ async function handleOpenRouterStream(
   // extra_headers, etc.) are forwarded transparently to the OpenRouter API.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
-  // anthropic/claude-opus-4.6 supports verbosity=max (maps to output_config.effort=max).
-  // Inject it as a default; the caller can still override by including verbosity in the request.
-  const verbosityDefault = body.model === "anthropic/claude-opus-4.6" && !("verbosity" in passThrough)
-    ? { verbosity: "max" }
-    : {};
+  // For known reasoning models, inject reasoning: { effort: "xhigh" } by default.
+  // Callers can override by including "reasoning" in their request body.
+  const reasoningDefault = getOpenRouterReasoningDefault(body.model, passThrough as Record<string, unknown>);
 
   const params = {
-    ...verbosityDefault,
+    ...reasoningDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
@@ -1076,13 +1113,12 @@ async function handleOpenRouterNonStream(
   // (provider, transforms, route, cache_control, etc.) pass through untouched.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
-  // anthropic/claude-opus-4.6 supports verbosity=max; inject as default (caller can override).
-  const verbosityDefault = body.model === "anthropic/claude-opus-4.6" && !("verbosity" in passThrough)
-    ? { verbosity: "max" }
-    : {};
+  // For known reasoning models, inject reasoning: { effort: "xhigh" } by default.
+  // Callers can override by including "reasoning" in their request body.
+  const reasoningDefault = getOpenRouterReasoningDefault(body.model, passThrough as Record<string, unknown>);
 
   const params = {
-    ...verbosityDefault,
+    ...reasoningDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
