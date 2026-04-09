@@ -468,6 +468,28 @@ function sseWrite(res: Response, data: unknown) {
   } catch { /* socket closed between writableEnded check and write — ignore */ }
 }
 
+/**
+ * Write a keepalive heartbeat as a proper SSE `data:` event, not a comment.
+ *
+ * Why not just `": keepalive\n\n"` (SSE comment)?
+ * Replit's reverse proxy (and many others) measure "activity" at the HTTP
+ * response-body level — meaning only bytes in `data:` lines are guaranteed
+ * to reset the idle timer.  Comment lines (`: ...`) are valid SSE but some
+ * proxies treat them as zero-payload and don't count them.
+ *
+ * An empty-choices chunk is harmless: every compliant OAI client checks
+ * `choices.length` before processing deltas and silently skips empty arrays.
+ */
+function sseKeepalive(res: Response, model: string) {
+  sseWrite(res, {
+    id: `ka-${Date.now()}`,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [],
+  });
+}
+
 function setSseHeaders(res: Response) {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -584,7 +606,7 @@ async function handleClaudeStream(
   // re-throwing into the outer catch would find headersSent=true and send nothing,
   // leaving the client connection hanging indefinitely.
   const keepaliveInterval = setInterval(() => {
-    if (!res.writableEnded) res.write(": keepalive\n\n");
+    sseKeepalive(res, model);
   }, 5000);
 
   try {
@@ -825,7 +847,7 @@ async function handleGeminiStream(
   const id = `chatcmpl-${Date.now()}`;
 
   const keepaliveInterval = setInterval(() => {
-    if (!res.writableEnded) res.write(": keepalive\n\n");
+    sseKeepalive(res, model);
   }, 5000);
 
   try {
@@ -979,7 +1001,7 @@ async function handleOpenRouterStream(
   } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
   const keepaliveInterval = setInterval(() => {
-    if (!res.writableEnded) res.write(": keepalive\n\n");
+    sseKeepalive(res, body.model);
   }, 5000);
 
   try {
@@ -1089,7 +1111,7 @@ async function handleOpenAIStream(
   }
 
   const keepaliveInterval = setInterval(() => {
-    if (!res.writableEnded) res.write(": keepalive\n\n");
+    sseKeepalive(res, body.model);
   }, 5000);
 
   try {
@@ -1227,7 +1249,7 @@ async function handlePromptTools(
     setSseHeaders(res);
     res.write(": init\n\n");
     promptToolsKeepalive = setInterval(() => {
-      if (!res.writableEnded) res.write(": keepalive\n\n");
+      sseKeepalive(res, model);
     }, 5_000);
   }
 
