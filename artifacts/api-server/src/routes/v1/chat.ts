@@ -182,6 +182,10 @@ interface ChatBody {
   parallel_tool_calls?: boolean;
   // response_format
   response_format?: { type: string };
+  // Anthropic top-level prompt caching (OpenRouter automatic caching or direct Anthropic)
+  cache_control?: { type: "ephemeral"; ttl?: string };
+  // Prompt-based tool calling fallback (any model, any route)
+  x_use_prompt_tools?: boolean;
   // allow any provider-specific extra fields (e.g. OpenRouter: provider, transforms, route, etc.)
   [key: string]: unknown;
 }
@@ -256,7 +260,13 @@ function convertMessagesToAnthropic(messages: OAIMessage[]): {
           (p) => (p as Record<string, unknown>)["cache_control"] !== undefined,
         );
         if (hasCache) {
-          system = oaiContentToAnthropic(msg.content) as Anthropic.TextBlockParam[];
+          // Filter to text blocks only — Anthropic's `system` field does not accept image blocks.
+          const allBlocks = oaiContentToAnthropic(msg.content);
+          const textBlocks = allBlocks.filter(
+            (b): b is Anthropic.TextBlockParam => b.type === "text",
+          );
+          // Only use array form when there's actually content; fall back to string otherwise.
+          system = textBlocks.length > 0 ? textBlocks : "";
         } else {
           system = msg.content
             .filter((p) => (p as { type: string }).type === "text")
@@ -1249,8 +1259,16 @@ async function handlePromptTools(
     }
   } catch (err: unknown) {
     const { status, message } = extractUpstreamError(err);
-    if (!res.headersSent) res.status(status);
-    if (!res.writableEnded) res.end(JSON.stringify({ error: { message, type: "upstream_error" } }));
+    if (stream) {
+      // Client expected SSE — emit the error as an SSE event so they don't hang.
+      if (!res.headersSent) setSseHeaders(res);
+      sseWrite(res, { error: { message, type: "upstream_error" } });
+      if (!res.writableEnded) { res.write("data: [DONE]\n\n"); res.end(); }
+    } else {
+      if (!res.headersSent) res.status(status);
+      res.setHeader("Content-Type", "application/json");
+      if (!res.writableEnded) res.end(JSON.stringify({ error: { message, type: "upstream_error" } }));
+    }
     return;
   }
 
@@ -1388,7 +1406,7 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
     // Activated by `"x_use_prompt_tools": true` in the request body.
     // Strips `tools` from the upstream call and teaches the model via a
     // system-prompt injection instead, enabling tool calling on any model.
-    if ((body as Record<string, unknown>)["x_use_prompt_tools"] === true && body.tools?.length) {
+    if (body.x_use_prompt_tools === true && body.tools?.length) {
       await handlePromptTools(req, res, body);
       return;
     }

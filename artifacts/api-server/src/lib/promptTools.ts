@@ -13,9 +13,9 @@
  */
 
 export interface PromptTool {
-  type: "function";
-  function: {
-    name: string;
+  type?: string;
+  function?: {
+    name?: string;
     description?: string;
     parameters?: Record<string, unknown>;
   };
@@ -35,18 +35,18 @@ const INSTRUCTION = `
 
 /**
  * Build the system-prompt injection for prompt-based tool calling.
- * Replaces `{{TOOLS_SCHEMA}}` with the compact JSON of the tools array.
+ * Silently skips malformed tool entries (missing name / function field).
  */
 export function buildPromptToolsInstruction(tools: PromptTool[]): string {
-  const schema = JSON.stringify(
-    tools.map((t) => ({
-      name: t.function.name,
-      description: t.function.description ?? "",
-      parameters: t.function.parameters ?? {},
-    })),
-    null,
-    2,
-  );
+  const valid = tools
+    .filter((t) => t?.function?.name)
+    .map((t) => ({
+      name: t.function!.name ?? "",
+      description: t.function!.description ?? "",
+      parameters: t.function!.parameters ?? {},
+    }));
+
+  const schema = JSON.stringify(valid, null, 2);
   return INSTRUCTION.replace("{{TOOLS_SCHEMA}}", schema);
 }
 
@@ -57,32 +57,80 @@ export interface ParsedPromptToolsResult {
 }
 
 /**
+ * Walk forward from `start` in `text` and find the index of the closing `}`
+ * that matches the opening `{` at `start`.
+ * Returns -1 if no balanced match is found.
+ *
+ * Handles:
+ *   - Nested objects and arrays
+ *   - String literals (including escaped quotes inside them)
+ */
+function findMatchingBrace(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let i = start;
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (inString) {
+      if (ch === "\\") {
+        i += 2; // skip escaped character
+        continue;
+      }
+      if (ch === '"') inString = false;
+    } else {
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === "{") {
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
  * Parse the model's JSON response and convert to structured result.
- * Handles markdown code-fence stripping and loose JSON extraction.
+ *
+ * Robust against:
+ *   - Markdown code fences (```json ... ```)
+ *   - Leading/trailing prose around the JSON object
+ *   - Escaped characters inside string values
+ *   - Extra closing braces after the JSON (e.g. template variables like {x})
  */
 export function parsePromptToolsResponse(raw: string): ParsedPromptToolsResult {
   let text = raw.trim();
 
-  // Strip markdown fences
+  // Strip markdown fences (```json\n...\n``` or ```\n...\n```)
   text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
 
-  // Find the outermost JSON object
+  // Find the first `{` in the text
   const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1) return { isToolCall: false, content: raw };
+  if (start === -1) return { isToolCall: false, content: raw };
+
+  // Find the matching `}` using a proper bracket-depth scanner
+  const end = findMatchingBrace(text, start);
+  if (end === -1) return { isToolCall: false, content: raw };
 
   try {
     const parsed = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
 
     if (parsed["type"] === "tool_calls" && Array.isArray(parsed["calls"])) {
-      const calls = parsed["calls"] as Array<{ name: string; parameters?: Record<string, unknown> }>;
+      const calls = parsed["calls"] as Array<{ name?: unknown; parameters?: Record<string, unknown> }>;
       return {
         isToolCall: true,
-        calls: calls.map((c, i) => ({
-          id: `call_pt_${Date.now()}_${i}`,
-          name: String(c.name ?? ""),
-          arguments: JSON.stringify(c.parameters ?? {}),
-        })),
+        calls: calls
+          .filter((c) => typeof c.name === "string" && c.name)
+          .map((c, i) => ({
+            id: `call_pt_${Date.now()}_${i}`,
+            name: c.name as string,
+            arguments: JSON.stringify(c.parameters ?? {}),
+          })),
         content: "",
       };
     }
@@ -91,7 +139,7 @@ export function parsePromptToolsResponse(raw: string): ParsedPromptToolsResult {
       return { isToolCall: false, content: parsed["content"] };
     }
   } catch {
-    // Invalid JSON — treat the whole response as plain text
+    // Invalid JSON — treat the whole original response as plain text
   }
 
   return { isToolCall: false, content: raw };
@@ -113,7 +161,7 @@ export function buildCompletionFromPromptTools(
     content: result.isToolCall ? null : result.content,
   };
 
-  if (result.isToolCall && result.calls) {
+  if (result.isToolCall && result.calls && result.calls.length > 0) {
     message["tool_calls"] = result.calls.map((c) => ({
       id: c.id,
       type: "function",
@@ -130,7 +178,7 @@ export function buildCompletionFromPromptTools(
       {
         index: 0,
         message,
-        finish_reason: result.isToolCall ? "tool_calls" : "stop",
+        finish_reason: result.isToolCall && result.calls?.length ? "tool_calls" : "stop",
       },
     ],
     usage: {
