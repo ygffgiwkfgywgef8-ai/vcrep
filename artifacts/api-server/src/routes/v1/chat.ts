@@ -893,17 +893,18 @@ async function handleOpenRouterStream(
 
   const resolvedMessages = await resolveImageUrls(body.messages);
 
-  const params: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
+  // Strip proxy-internal fields, then spread the rest so ALL caller-supplied
+  // OpenRouter-specific parameters (provider, transforms, route, cache_control,
+  // extra_headers, etc.) are forwarded transparently to the OpenRouter API.
+  const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
+
+  const params = {
+    ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
-    stream: true,
+    stream: true as const,
     stream_options: { include_usage: true },
-  };
-
-  if (body.temperature !== undefined) params.temperature = body.temperature;
-  if (body.top_p !== undefined) params.top_p = body.top_p;
-  if (body.max_tokens !== undefined) params.max_tokens = body.max_tokens;
-  if (body.stop !== undefined) params.stop = body.stop as string | string[];
+  } as OpenAI.Chat.ChatCompletionCreateParamsStreaming;
 
   const keepaliveInterval = setInterval(() => {
     res.write(": keepalive\n\n");
@@ -942,17 +943,16 @@ async function handleOpenRouterNonStream(
 ) {
   const resolvedMessages = await resolveImageUrls(body.messages);
 
-  const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+  // Spread all caller-supplied fields so OpenRouter-specific parameters
+  // (provider, transforms, route, cache_control, etc.) pass through untouched.
+  const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
+
+  const params = {
+    ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
-    stream: false,
-  };
-
-  if (body.temperature !== undefined) params.temperature = body.temperature;
-  if (body.top_p !== undefined) params.top_p = body.top_p;
-  if (body.max_tokens !== undefined) params.max_tokens = body.max_tokens;
-  if (body.stop !== undefined) params.stop = body.stop as string | string[];
-  if (body.seed !== undefined) params.seed = body.seed;
+    stream: false as const,
+  } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming;
 
   const ka = startNonStreamKeepalive(res);
   try {
