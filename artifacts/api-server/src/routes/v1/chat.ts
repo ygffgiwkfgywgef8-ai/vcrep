@@ -518,7 +518,14 @@ function startNonStreamKeepalive(res: Response): ReturnType<typeof setInterval> 
 }
 
 function endNonStream(res: Response, data: unknown): void {
-  if (!res.writableEnded) res.end(JSON.stringify(data));
+  if (res.writableEnded) return;
+  let json: string;
+  try {
+    json = JSON.stringify(data);
+  } catch {
+    json = JSON.stringify({ error: { message: "Response serialization error", type: "proxy_error" } });
+  }
+  res.end(json);
 }
 
 function endNonStreamError(res: Response, statusCode: number, message: string, type: string): void {
@@ -534,7 +541,7 @@ function endNonStreamError(res: Response, statusCode: number, message: string, t
  * thrown values default to 502 Bad Gateway.
  */
 function extractUpstreamError(err: unknown): { status: number; message: string } {
-  const message = err instanceof Error ? err.message : "Upstream error";
+  const message = err instanceof Error ? err.message : String(err);
   const status =
     err !== null && typeof err === "object" && "status" in err &&
     typeof (err as { status: unknown }).status === "number"
@@ -1251,6 +1258,10 @@ async function handlePromptTools(
     promptToolsKeepalive = setInterval(() => {
       sseKeepalive(res, model);
     }, 5_000);
+  } else {
+    // Non-streaming: send whitespace keepalive so Replit's 300s proxy timeout
+    // doesn't cut long Anthropic / Gemini calls before the response is ready.
+    promptToolsKeepalive = startNonStreamKeepalive(res);
   }
 
   try {
