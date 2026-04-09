@@ -72,7 +72,7 @@ async function checkForUpdate(): Promise<void> {
 
   try {
     const versionUrl = resolveVersionUrl(sourceUrl);
-    const r = await fetch(versionUrl, { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(versionUrl);
     if (!r.ok) return;
     const body = await r.json() as { current?: { version?: string }; version?: string };
     const remoteVersion = body.current?.version ?? (body as { version?: string }).version ?? null;

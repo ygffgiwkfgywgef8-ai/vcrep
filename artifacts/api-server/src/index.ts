@@ -46,10 +46,7 @@ const server = app.listen(port, (err) => {
   startUpdateChecker();
 });
 
-// Disable all server-level timeouts so long streaming responses (10k+ tokens,
-// 7-10 min) are never cut short by the HTTP layer.
-// SSE keepalive frames every 5 s keep the TCP connection alive through proxies.
-server.headersTimeout  = 0;   // no timeout waiting for request headers
-server.requestTimeout  = 0;   // no timeout for the full request/response cycle
-server.timeout         = 0;   // no socket inactivity timeout
-server.keepAliveTimeout = 65_000; // keep TCP alive slightly longer than a 60 s proxy
+server.headersTimeout   = 0;
+server.requestTimeout   = 0;
+server.timeout          = 0;
+server.keepAliveTimeout = 0;

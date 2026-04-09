@@ -87,7 +87,7 @@ router.get("/version", async (_req: Request, res: Response) => {
   if (updateSourceUrl) {
     try {
       const versionUrl = resolveVersionUrl(updateSourceUrl);
-      const r = await fetch(versionUrl, { signal: AbortSignal.timeout(5000) });
+      const r = await fetch(versionUrl);
       if (r.ok) {
         const body = await r.json() as { current?: typeof remote };
         remote = (body.current ?? body) as typeof remote;
