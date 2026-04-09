@@ -175,6 +175,8 @@ interface ChatBody {
   parallel_tool_calls?: boolean;
   // response_format
   response_format?: { type: string };
+  // allow any provider-specific extra fields (e.g. OpenRouter: provider, transforms, route, etc.)
+  [key: string]: unknown;
 }
 
 // ----------------------------------------------------------------------
