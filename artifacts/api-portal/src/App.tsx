@@ -326,18 +326,23 @@ function buildAgentPrompt(remoteVersion: string): string {
 
 源代码仓库：${GITHUB_URL}
 
-操作步骤：
-1. 在项目根目录执行 git 拉取（从上面的仓库拉取 main 分支）：
+操作步骤（全程无需我介入）：
+
+1. 先用 read 工具读取并记录 .replit 文件的完整内容（用于后续恢复）。
+
+2. 在项目根目录执行 git 拉取：
    git fetch ${GITHUB_URL} main
    git -c core.hooksPath=/dev/null reset --hard FETCH_HEAD
 
-2. 若 .replit 或 replit.nix 被上述命令覆盖，请恢复它们。
+3. 用 write 工具将步骤 1 中记录的 .replit 内容写回 .replit，确保 Replit 工作区配置不被覆盖。
 
-3. 执行：
+4. 执行：
    pnpm install
 
-4. 重启名为 "artifacts/api-server: API Server" 的 workflow。
-   重启后服务会自动编译新代码并上线，无需任何额外操作。`;
+5. 重启名为 "artifacts/api-server: API Server" 的 workflow。
+   重启后服务会自动编译新代码并上线，无需任何额外操作。
+
+完成后告知我。`;
 }
 
 function UpdatePanel() {
