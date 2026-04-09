@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const BG = "hsl(222,47%,11%)";
 const CARD = "hsl(222,47%,15%)";
@@ -46,7 +46,6 @@ type UpdateState = "idle" | "checking" | "up-to-date" | "available" | "error";
 // ── Config Incomplete Banner (sticky) ────────────────────────────────────────
 function ConfigBanner({ status, onGoToSetup }: { status: SetupStatus; onGoToSetup: () => void }) {
   const missing: string[] = [];
-  if (!status.configured) missing.push("PROXY_API_KEY");
   if (!status.integrations.anthropic) missing.push("Anthropic Integration");
   if (!status.integrations.openai) missing.push("OpenAI Integration");
   if (!status.integrations.gemini) missing.push("Gemini Integration");
@@ -541,7 +540,7 @@ for (const i of integrations) {
 }
 console.log("All integrations configured.");`;
 
-function buildUnifiedPrompt(needsKey: boolean, keyValue: string, needsIntegrations: boolean): string {
+function buildUnifiedPrompt(needsIntegrations: boolean): string {
   const lines: string[] = [
     "请帮我完成 AI Monorepo 的初始配置，按以下步骤执行（全程无需我介入）：",
     "",
@@ -549,14 +548,6 @@ function buildUnifiedPrompt(needsKey: boolean, keyValue: string, needsIntegratio
     "",
   ];
   let step = 1;
-
-  if (needsKey && keyValue.trim()) {
-    lines.push(`第${step++}步：添加 Secret`);
-    lines.push(`通过 Replit Secrets 面板（或 viewEnvVars / setEnvVars 工具）添加以下 Secret：`);
-    lines.push(`PROXY_API_KEY = "${keyValue.trim()}"`);
-    lines.push(`这是我自己设定的代理访问密钥，不是任何第三方服务的 API Key。`);
-    lines.push("");
-  }
 
   if (needsIntegrations) {
     lines.push(`第${step++}步：通过 code_execution 工具执行以下代码，依次配置全部 4 个 AI Integration：`);
@@ -572,33 +563,25 @@ function buildUnifiedPrompt(needsKey: boolean, keyValue: string, needsIntegratio
   return lines.join("\n");
 }
 
-type WizardPhase = "overview" | "set-key" | "copy-prompt" | "verify";
+type WizardPhase = "overview" | "copy-prompt" | "verify";
 
 function SetupWizard({ status, onRecheck, onDismiss }: {
   status: SetupStatus;
   onRecheck: () => void;
   onDismiss?: () => void;
 }) {
-  const needsKey = !status.configured;
   const needsIntegrations = !status.integrations.allReady;
 
-  const phases = useMemo<WizardPhase[]>(() => {
-    const list: WizardPhase[] = ["overview"];
-    if (needsKey) list.push("set-key");
-    list.push("copy-prompt");
-    list.push("verify");
-    return list;
-  }, [needsKey]);
+  const phases: WizardPhase[] = ["overview", "copy-prompt", "verify"];
 
   const [phaseIdx, setPhaseIdx] = useState(0);
-  const [keyInput, setKeyInput] = useState("");
   const [checking, setChecking] = useState(false);
 
   const phase = phases[phaseIdx];
   const totalSteps = phases.length - 1;
   const currentStep = phaseIdx;
 
-  const unifiedPrompt = buildUnifiedPrompt(needsKey, keyInput, needsIntegrations);
+  const unifiedPrompt = buildUnifiedPrompt(needsIntegrations);
 
   const goNext = () => setPhaseIdx(i => Math.min(i + 1, phases.length - 1));
 
@@ -656,39 +639,10 @@ function SetupWizard({ status, onRecheck, onDismiss }: {
             <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.6, marginBottom: 20 }}>
               以下是当前配置状态。向导会逐步引导你完成，<strong style={{ color: TEXT }}>全程只需复制一段提示词发给 AI 助手即可</strong>。
             </div>
-            <StatusRow ok={status.configured} label="PROXY_API_KEY — 访问密钥" />
             <StatusRow ok={status.integrations.anthropic} label="Anthropic Integration — Claude 系列" />
             <StatusRow ok={status.integrations.openai} label="OpenAI Integration — GPT / o 系列" />
             <StatusRow ok={status.integrations.gemini} label="Gemini Integration — Gemini 系列" />
             <StatusRow ok={status.integrations.openrouter} label="OpenRouter Integration — Llama / Grok / DeepSeek 等" />
-          </>)}
-
-          {/* ── SET KEY ── */}
-          {phase === "set-key" && (<>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>设置你的访问密钥</div>
-            <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.6, marginBottom: 18 }}>
-              <code style={{ background: `${ACCENT}18`, padding: "1px 5px", borderRadius: 4, fontSize: 12, color: ACCENT }}>PROXY_API_KEY</code>
-              {" "}是你自己设定的代理密钥，客户端用它来鉴权。值可以是任意字符串，<strong style={{ color: TEXT }}>与任何第三方服务无关</strong>。
-            </div>
-            <input
-              type="text"
-              autoFocus
-              placeholder="例如：my-secret-key-123"
-              value={keyInput}
-              onChange={e => setKeyInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && keyInput.trim()) goNext(); }}
-              style={{
-                width: "100%", boxSizing: "border-box",
-                padding: "10px 13px", borderRadius: 8,
-                border: `1.5px solid ${keyInput.trim() ? ACCENT : BORDER}`,
-                background: BG, color: TEXT,
-                fontSize: 14, fontFamily: "monospace",
-                outline: "none", transition: "border-color 0.15s",
-              }}
-            />
-            {!keyInput.trim() && (
-              <p style={{ margin: "8px 0 0", fontSize: 12, color: MUTED }}>填写密钥后方可继续</p>
-            )}
           </>)}
 
           {/* ── COPY PROMPT ── */}
@@ -696,7 +650,7 @@ function SetupWizard({ status, onRecheck, onDismiss }: {
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>将提示词发给 Replit Assistant</div>
             <div style={{ fontSize: 13, color: MUTED, lineHeight: 1.6, marginBottom: 18 }}>
               点击复制，然后打开 <strong style={{ color: TEXT }}>Replit Assistant（右下角 AI 图标）</strong>，把内容粘贴发送。
-              助手会自动完成{needsKey ? "密钥设置、Integration 配置" : "Integration 配置"}和服务器重启，无需你做任何其他操作。
+              助手会自动完成 Integration 配置和服务器重启，无需你做任何其他操作。
             </div>
             <CopyBox value={unifiedPrompt} label="点击复制提示词" />
           </>)}
@@ -717,9 +671,6 @@ function SetupWizard({ status, onRecheck, onDismiss }: {
         {/* Action buttons */}
         {phase === "overview" && (
           <PrimaryBtn onClick={goNext}>开始配置 →</PrimaryBtn>
-        )}
-        {phase === "set-key" && (
-          <PrimaryBtn onClick={goNext} disabled={!keyInput.trim()}>下一步 →</PrimaryBtn>
         )}
         {phase === "copy-prompt" && (
           <PrimaryBtn onClick={goNext}>已发送给助手，下一步 →</PrimaryBtn>
