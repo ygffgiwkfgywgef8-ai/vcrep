@@ -26,7 +26,7 @@ function readVersionFile(): VersionFile {
 
 router.get("/version", async (_req: Request, res: Response) => {
   const local = readVersionFile();
-  const updateSourceUrl = process.env["UPDATE_SOURCE_URL"] ?? "https://github.com/Akatsuki03/AI-Monorepo";
+  const updateSourceUrl = process.env["UPDATE_SOURCE_URL"] ?? "https://github.com/ygffgiwkfgywgef8-ai/vcrep";
 
   let remote: { version: string; releaseDate?: string; changelog?: string[] } | null = null;
   let updateAvailable = false;

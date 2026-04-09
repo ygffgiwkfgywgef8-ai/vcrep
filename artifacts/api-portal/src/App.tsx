@@ -319,7 +319,7 @@ function StatusRow({ ok, label }: { ok: boolean; label: string }) {
 
 // ── Update Panel ───────────────────────────────────────────────────────
 
-const GITHUB_URL = "https://github.com/Akatsuki03/AI-Monorepo";
+const GITHUB_URL = "https://github.com/ygffgiwkfgywgef8-ai/vcrep";
 
 function buildAgentPrompt(remoteVersion: string): string {
   return `请帮我把 AI Monorepo 更新到最新版本（v${remoteVersion}）。
@@ -328,7 +328,7 @@ function buildAgentPrompt(remoteVersion: string): string {
 
 操作步骤：
 1. 在项目根目录执行 git 拉取（从上面的仓库拉取 main 分支）：
-   git fetch https://github.com/Akatsuki03/AI-Monorepo main
+   git fetch ${GITHUB_URL} main
    git -c core.hooksPath=/dev/null reset --hard FETCH_HEAD
 
 2. 若 .replit 或 replit.nix 被上述命令覆盖，请恢复它们。

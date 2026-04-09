@@ -1,13 +1,25 @@
 {
-  "version": "1.1.7",
-  "releaseDate": "2026-04-07",
+  "version": "1.2.0",
+  "releaseDate": "2026-04-09",
   "changelog": [
-    "New / 新增: 配置向导新增 PROXY_API_KEY 输入框，由用户直接填写密钥值 -- Setup wizard now has a PROXY_API_KEY input field",
-    "New / 新增: 统一一键提示词 -- 根据缺失项自动生成包含密钥设置 + Integration 配置 + 重启的完整 Agent 提示词，复制后发给 Assistant 即可完成全部配置 -- Unified one-click Agent prompt covering key setup, integrations, and server restart",
-    "Fix / 修复: 向导跳过（稍后配置）状态现持久化至 localStorage，刷新页面后不再重新弹出配置向导 -- Wizard dismissal now persisted in localStorage; no more wizard re-appear on page reload",
-    "Fix / 修复: 全部配置就绪时自动清除 localStorage 标记，确保配置完成后从不再显示向导 -- localStorage flag cleared automatically when all config is ready"
+    "Perf / 性能: modelGroups 读取改为进程内缓存 -- readGroups() now uses in-process cache; disk read occurs only once per write cycle instead of on every request",
+    "Refactor / 重构: versionUtils 提取为共享模块，消除跨文件重复 -- findProjectRoot / resolveVersionUrl / compareVersions extracted to shared versionUtils.ts",
+    "Refactor / 重构: extractUpstreamError 辅助函数统一四处错误提取逻辑 -- Shared extractUpstreamError() helper replaces four identical catch blocks; upstream 3xx now normalised to 4xx",
+    "Clean / 清理: models.ts 内联 makeModel，health.ts 移除无用 Zod 校验 -- makeModel inlined; health route no longer runs Zod parse on a hardcoded constant",
+    "Fix / 修复: 更新提示词中的 git fetch URL 改用常量而非重复硬编码 -- Update Agent prompt: git fetch URL now uses the GITHUB_URL constant instead of a second hardcoded string",
+    "Config / 配置: 仓库地址更新为 github.com/ygffgiwkfgywgef8-ai/vcrep（已公开）-- Repo URL updated to ygffgiwkfgywgef8-ai/vcrep (now public)"
   ],
   "history": [
+    {
+      "version": "1.1.7",
+      "releaseDate": "2026-04-07",
+      "changelog": [
+        "New / 新增: 配置向导新增 PROXY_API_KEY 输入框，由用户直接填写密钥值 -- Setup wizard now has a PROXY_API_KEY input field",
+        "New / 新增: 统一一键提示词 -- 根据缺失项自动生成包含密钥设置 + Integration 配置 + 重启的完整 Agent 提示词，复制后发给 Assistant 即可完成全部配置 -- Unified one-click Agent prompt covering key setup, integrations, and server restart",
+        "Fix / 修复: 向导跳过（稍后配置）状态现持久化至 localStorage，刷新页面后不再重新弹出配置向导 -- Wizard dismissal now persisted in localStorage; no more wizard re-appear on page reload",
+        "Fix / 修复: 全部配置就绪时自动清除 localStorage 标记，确保配置完成后从不再显示向导 -- localStorage flag cleared automatically when all config is ready"
+      ]
+    },
     {
       "version": "1.1.6",
       "releaseDate": "2026-04-07",

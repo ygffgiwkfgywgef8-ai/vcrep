@@ -26,7 +26,7 @@ function readLocalVersion(): string {
 // -- Check function -------------------------------------------------------------
 
 async function checkForUpdate(): Promise<void> {
-  const sourceUrl = process.env["UPDATE_SOURCE_URL"] ?? "https://github.com/Akatsuki03/AI-Monorepo";
+  const sourceUrl = process.env["UPDATE_SOURCE_URL"] ?? "https://github.com/ygffgiwkfgywgef8-ai/vcrep";
   const local = readLocalVersion();
   updateState.currentVersion = local;
 
