@@ -898,7 +898,14 @@ async function handleOpenRouterStream(
   // extra_headers, etc.) are forwarded transparently to the OpenRouter API.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
+  // anthropic/claude-opus-4.6 supports verbosity=max (maps to output_config.effort=max).
+  // Inject it as a default; the caller can still override by including verbosity in the request.
+  const verbosityDefault = body.model === "anthropic/claude-opus-4.6" && !("verbosity" in passThrough)
+    ? { verbosity: "max" }
+    : {};
+
   const params = {
+    ...verbosityDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
@@ -947,7 +954,13 @@ async function handleOpenRouterNonStream(
   // (provider, transforms, route, cache_control, etc.) pass through untouched.
   const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
 
+  // anthropic/claude-opus-4.6 supports verbosity=max; inject as default (caller can override).
+  const verbosityDefault = body.model === "anthropic/claude-opus-4.6" && !("verbosity" in passThrough)
+    ? { verbosity: "max" }
+    : {};
+
   const params = {
+    ...verbosityDefault,
     ...passThrough,
     model: body.model,
     messages: resolvedMessages as OpenAI.ChatCompletionMessageParam[],
