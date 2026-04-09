@@ -472,9 +472,13 @@ function setSseHeaders(res: Response) {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
-  // Disable Nagle's algorithm so each token chunk is sent to the client immediately
-  // without being buffered/coalesced. This is the primary fix for laggy streaming.
-  res.socket?.setNoDelay(true);
+  if (res.socket) {
+    // Disable Nagle's algorithm — each token chunk is sent immediately without buffering.
+    res.socket.setNoDelay(true);
+    // Belt-and-suspenders: reset the socket-level idle timeout to 0 (infinite) so that
+    // active token streams are never cut by a stale OS/proxy socket timeout.
+    res.socket.setTimeout(0);
+  }
 }
 
 /**
@@ -1213,9 +1217,18 @@ async function handlePromptTools(
   // B1 fix: when the caller expects SSE, open the connection immediately BEFORE the upstream call.
   // Without this, the Replit proxy can timeout (300s) on long-running model calls because
   // no bytes flow to the client until after the upstream finishes.
+  //
+  // Keepalive: handlePromptTools calls the upstream in NON-streaming mode and waits for the
+  // full response before writing SSE chunks. To prevent the reverse proxy from cutting the
+  // idle connection during that wait, send an SSE comment every 5 s — proxies (including
+  // Replit's) treat any byte as activity and reset their idle timer.
+  let promptToolsKeepalive: ReturnType<typeof setInterval> | undefined;
   if (stream) {
     setSseHeaders(res);
     res.write(": init\n\n");
+    promptToolsKeepalive = setInterval(() => {
+      if (!res.writableEnded) res.write(": keepalive\n\n");
+    }, 5_000);
   }
 
   try {
@@ -1273,6 +1286,8 @@ async function handlePromptTools(
       completionTokens = resp.usage?.completion_tokens ?? 0;
     }
   } catch (err: unknown) {
+    // Stop keepalive before replying — no more writes needed after this.
+    clearInterval(promptToolsKeepalive);
     const { status, message } = extractUpstreamError(err);
     if (stream) {
       // Client expected SSE — emit the error as an SSE event so they don't hang.
@@ -1286,6 +1301,9 @@ async function handlePromptTools(
     }
     return;
   }
+
+  // Upstream call finished — keepalive is no longer needed.
+  clearInterval(promptToolsKeepalive);
 
   const parsed = parsePromptToolsResponse(responseText);
   const completion = buildCompletionFromPromptTools(parsed, model, {
