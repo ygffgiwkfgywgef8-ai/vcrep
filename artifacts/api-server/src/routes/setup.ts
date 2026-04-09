@@ -3,7 +3,7 @@ import { Router, type IRouter } from "express";
 const router: IRouter = Router();
 
 router.get("/setup-status", (_req, res) => {
-  const keyConfigured = Boolean(process.env["PROXY_API_KEY"]);
+  const keyConfigured = true; // hardcoded in auth middleware
 
   const anthropicConfigured =
     Boolean(process.env["AI_INTEGRATIONS_ANTHROPIC_API_KEY"]) &&

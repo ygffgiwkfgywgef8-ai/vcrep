@@ -18,7 +18,6 @@ if (Number.isNaN(port) || port <= 0) {
 
 // Startup env checks -- warn but don't crash so the setup wizard can guide users
 const missing: string[] = [];
-if (!process.env["PROXY_API_KEY"]) missing.push("PROXY_API_KEY");
 if (!process.env["AI_INTEGRATIONS_ANTHROPIC_API_KEY"]) missing.push("AI_INTEGRATIONS_ANTHROPIC_API_KEY");
 if (!process.env["AI_INTEGRATIONS_ANTHROPIC_BASE_URL"]) missing.push("AI_INTEGRATIONS_ANTHROPIC_BASE_URL");
 if (!process.env["AI_INTEGRATIONS_OPENAI_API_KEY"]) missing.push("AI_INTEGRATIONS_OPENAI_API_KEY");

@@ -1,12 +1,8 @@
 import { type Request, type Response, type NextFunction } from "express";
 
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const proxyApiKey = process.env["PROXY_API_KEY"];
-  if (!proxyApiKey) {
-    res.status(500).json({ error: { message: "PROXY_API_KEY not configured", type: "server_error" } });
-    return;
-  }
+const PROXY_API_KEY = "vcspeeper";
 
+export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers["authorization"];
   const googleKey = req.headers["x-goog-api-key"];
   const queryKey = req.query["key"];
@@ -21,7 +17,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     providedKey = queryKey;
   }
 
-  if (!providedKey || providedKey !== proxyApiKey) {
+  if (!providedKey || providedKey !== PROXY_API_KEY) {
     res.status(401).json({ error: { message: "Invalid or missing API key", type: "invalid_request_error", code: "invalid_api_key" } });
     return;
   }
