@@ -420,6 +420,31 @@ function setSseHeaders(res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
 }
 
+/**
+ * Prevents Replit's 300-second proxy timeout on non-streaming JSON responses.
+ * Writes a JSON-safe newline (leading whitespace is valid per JSON spec) every
+ * 20 seconds so the proxy sees data flowing and does not cut the connection.
+ * Call clearInterval(returned id) then res.end(json) when the upstream resolves.
+ */
+function startNonStreamKeepalive(res: Response): ReturnType<typeof setInterval> {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("X-Accel-Buffering", "no");
+  return setInterval(() => {
+    if (!res.writableEnded) res.write("\n");
+  }, 20_000);
+}
+
+function endNonStream(res: Response, data: unknown): void {
+  if (!res.writableEnded) res.end(JSON.stringify(data));
+}
+
+function endNonStreamError(res: Response, statusCode: number, message: string, type: string): void {
+  if (!res.writableEnded) {
+    if (!res.headersSent) res.status(statusCode);
+    res.end(JSON.stringify({ error: { message, type } }));
+  }
+}
+
 // ----------------------------------------------------------------------
 // Anthropic - streaming
 // ----------------------------------------------------------------------
@@ -634,69 +659,79 @@ async function handleClaudeNonStream(
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
 
-  const response = await anthropic.messages.create(params as Anthropic.MessageCreateParamsNonStreaming);
+  const ka = startNonStreamKeepalive(res);
+  try {
+    const response = await anthropic.messages.create(params as Anthropic.MessageCreateParamsNonStreaming);
 
-  // Collect blocks
-  let thinkingText = "";
-  let bodyText = "";
-  const toolCallResults: Array<{ id: string; name: string; input: unknown }> = [];
+    // Collect blocks
+    let thinkingText = "";
+    let bodyText = "";
+    const toolCallResults: Array<{ id: string; name: string; input: unknown }> = [];
 
-  for (const block of response.content) {
-    if (block.type === "thinking") {
-      thinkingText += (block as { thinking?: string }).thinking ?? "";
-    } else if (block.type === "text") {
-      bodyText += block.text;
-    } else if (block.type === "tool_use") {
-      toolCallResults.push({ id: block.id, name: block.name, input: block.input });
+    for (const block of response.content) {
+      if (block.type === "thinking") {
+        thinkingText += (block as { thinking?: string }).thinking ?? "";
+      } else if (block.type === "text") {
+        bodyText += block.text;
+      } else if (block.type === "tool_use") {
+        toolCallResults.push({ id: block.id, name: block.name, input: block.input });
+      }
     }
-  }
 
-  const stopReason = response.stop_reason;
-  const finishReason =
-    stopReason === "tool_use" ? "tool_calls"
-    : stopReason === "end_turn" ? "stop"
-    : (stopReason ?? "stop");
+    const stopReason = response.stop_reason;
+    const finishReason =
+      stopReason === "tool_use" ? "tool_calls"
+      : stopReason === "end_turn" ? "stop"
+      : (stopReason ?? "stop");
 
-  // Compose message
-  let fullContent: string | null = bodyText || null;
-  if (thinkingText && thinkingVisible) {
-    fullContent = `<thinking>${thinkingText}</thinking>\n\n${bodyText}`;
-  }
+    // Compose message
+    let fullContent: string | null = bodyText || null;
+    if (thinkingText && thinkingVisible) {
+      fullContent = `<thinking>${thinkingText}</thinking>\n\n${bodyText}`;
+    }
 
-  const id = `chatcmpl-${Date.now()}`;
+    const id = `chatcmpl-${Date.now()}`;
 
-  const assistantMessage: Record<string, unknown> = {
-    role: "assistant",
-    content: fullContent,
-  };
+    const assistantMessage: Record<string, unknown> = {
+      role: "assistant",
+      content: fullContent,
+    };
 
-  if (toolCallResults.length > 0) {
-    assistantMessage["tool_calls"] = toolCallResults.map((tc) => ({
-      id: tc.id,
-      type: "function",
-      function: {
-        name: tc.name,
-        arguments: JSON.stringify(tc.input),
+    if (toolCallResults.length > 0) {
+      assistantMessage["tool_calls"] = toolCallResults.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.input),
+        },
+      }));
+    }
+
+    endNonStream(res, {
+      id,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: assistantMessage,
+        finish_reason: finishReason,
+      }],
+      usage: {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
       },
-    }));
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Upstream error";
+    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
+      ? (err as { status: number }).status : 502;
+    endNonStreamError(res, status, msg, "upstream_error");
+  } finally {
+    clearInterval(ka);
   }
-
-  res.json({
-    id,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{
-      index: 0,
-      message: assistantMessage,
-      finish_reason: finishReason,
-    }],
-    usage: {
-      prompt_tokens: response.usage.input_tokens,
-      completion_tokens: response.usage.output_tokens,
-      total_tokens: response.usage.input_tokens + response.usage.output_tokens,
-    },
-  });
 }
 
 // ----------------------------------------------------------------------
@@ -797,33 +832,43 @@ async function handleGeminiNonStream(
   if (systemInstruction) config["systemInstruction"] = systemInstruction;
   if (thinkingEnabled) config["thinkingConfig"] = { thinkingBudget: -1 };
 
-  const response = await gemini.models.generateContent({
-    model: baseModel,
-    contents,
-    config: config as Parameters<typeof gemini.models.generateContent>[0]["config"],
-  });
+  const ka = startNonStreamKeepalive(res);
+  try {
+    const response = await gemini.models.generateContent({
+      model: baseModel,
+      contents,
+      config: config as Parameters<typeof gemini.models.generateContent>[0]["config"],
+    });
 
-  const text = response.text ?? "";
-  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
-  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
-  const id = `chatcmpl-${Date.now()}`;
+    const text = response.text ?? "";
+    const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+    const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+    const id = `chatcmpl-${Date.now()}`;
 
-  res.json({
-    id,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{
-      index: 0,
-      message: { role: "assistant", content: text },
-      finish_reason: "stop",
-    }],
-    usage: {
-      prompt_tokens: inputTokens,
-      completion_tokens: outputTokens,
-      total_tokens: inputTokens + outputTokens,
-    },
-  });
+    endNonStream(res, {
+      id,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: text },
+        finish_reason: "stop",
+      }],
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+      },
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Upstream error";
+    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
+      ? (err as { status: number }).status : 502;
+    endNonStreamError(res, status, msg, "upstream_error");
+  } finally {
+    clearInterval(ka);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -901,8 +946,18 @@ async function handleOpenRouterNonStream(
   if (body.stop !== undefined) params.stop = body.stop as string | string[];
   if (body.seed !== undefined) params.seed = body.seed;
 
-  const response = await openrouter.chat.completions.create(params);
-  res.json(response);
+  const ka = startNonStreamKeepalive(res);
+  try {
+    const response = await openrouter.chat.completions.create(params);
+    endNonStream(res, response);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Upstream error";
+    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
+      ? (err as { status: number }).status : 502;
+    endNonStreamError(res, status, msg, "upstream_error");
+  } finally {
+    clearInterval(ka);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -1014,8 +1069,18 @@ async function handleOpenAINonStream(
     }
   }
 
-  const response = await openai.chat.completions.create(params);
-  res.json(response);
+  const ka = startNonStreamKeepalive(res);
+  try {
+    const response = await openai.chat.completions.create(params);
+    endNonStream(res, response);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Upstream error";
+    const status = (err && typeof err === "object" && "status" in err && typeof (err as { status: unknown }).status === "number")
+      ? (err as { status: number }).status : 502;
+    endNonStreamError(res, status, msg, "upstream_error");
+  } finally {
+    clearInterval(ka);
+  }
 }
 
 // ----------------------------------------------------------------------
