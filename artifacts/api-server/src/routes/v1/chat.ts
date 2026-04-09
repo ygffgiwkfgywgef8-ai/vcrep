@@ -72,7 +72,14 @@ export const anthropic = new Anthropic({
 
 export const gemini = new GoogleGenAI({
   apiKey: process.env["AI_INTEGRATIONS_GEMINI_API_KEY"] ?? "dummy",
-  httpOptions: { baseUrl: process.env["AI_INTEGRATIONS_GEMINI_BASE_URL"] },
+  httpOptions: {
+    // Replit AI Integrations proxy does not use a /v1/ or /v1beta/ path prefix.
+    // Setting apiVersion to "" removes the version segment from the URL so the
+    // SDK calls {baseUrl}/models/{model}:generateContent instead of
+    // {baseUrl}/v1beta/models/{model}:generateContent (INVALID_ENDPOINT).
+    apiVersion: "",
+    baseUrl: process.env["AI_INTEGRATIONS_GEMINI_BASE_URL"],
+  },
 });
 
 export const openrouter = new OpenAI({
