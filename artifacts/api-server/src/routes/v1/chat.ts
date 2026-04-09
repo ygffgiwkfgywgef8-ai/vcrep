@@ -878,6 +878,10 @@ async function handleOpenRouterStream(
   res: Response,
   body: ChatBody
 ) {
+  // Establish SSE connection immediately before image-URL resolution.
+  setSseHeaders(res);
+  res.write(": init\n\n");
+
   const resolvedMessages = await resolveImageUrls(body.messages);
 
   const params: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
@@ -891,9 +895,6 @@ async function handleOpenRouterStream(
   if (body.top_p !== undefined) params.top_p = body.top_p;
   if (body.max_tokens !== undefined) params.max_tokens = body.max_tokens;
   if (body.stop !== undefined) params.stop = body.stop as string | string[];
-
-  setSseHeaders(res);
-  res.write(": init\n\n");
 
   const keepaliveInterval = setInterval(() => {
     res.write(": keepalive\n\n");
