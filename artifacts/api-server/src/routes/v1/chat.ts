@@ -611,6 +611,8 @@ async function handleClaudeStream(
   const id = `chatcmpl-${Date.now()}`;
   let inThinking = false;
   let inputTokens = 0; // captured from message_start, used in final usage chunk
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   // Map Anthropic content-block index -> OAI tool_calls index (0-based among tool_use blocks only)
   const blockIdxToToolIdx: Record<number, number> = {};
   let toolCallCount = 0;
@@ -628,8 +630,10 @@ async function handleClaudeStream(
 
     for await (const event of stream) {
       if (event.type === "message_start") {
-        // Capture input token count for the final usage report
+        // Capture input token count (including cache tokens) for the final usage report
         inputTokens = event.message.usage?.input_tokens ?? 0;
+        cacheReadTokens = (event.message.usage as Record<string, unknown>)?.["cache_read_input_tokens"] as number ?? 0;
+        cacheCreationTokens = (event.message.usage as Record<string, unknown>)?.["cache_creation_input_tokens"] as number ?? 0;
         sseWrite(res, makeChunk(id, model, { role: "assistant", content: "" }));
 
       } else if (event.type === "content_block_start") {
@@ -696,11 +700,17 @@ async function handleClaudeStream(
           : (stopReason ?? "stop");
         // Build accurate usage: input_tokens from message_start + output_tokens from message_delta
         const outputTokens = event.usage?.output_tokens ?? 0;
-        const usage = {
+        const usage: Record<string, unknown> = {
           prompt_tokens: inputTokens,
           completion_tokens: outputTokens,
           total_tokens: inputTokens + outputTokens,
         };
+        // Pass through Anthropic cache token fields so clients can observe cache hits/misses
+        if (cacheReadTokens > 0 || cacheCreationTokens > 0) {
+          usage["cache_read_input_tokens"] = cacheReadTokens;
+          usage["cache_creation_input_tokens"] = cacheCreationTokens;
+          usage["prompt_tokens_details"] = { cached_tokens: cacheReadTokens };
+        }
         sseWrite(res, { ...makeChunk(id, model, {}, finishReason), usage });
       }
     }
@@ -828,11 +838,22 @@ async function handleClaudeNonStream(
         message: assistantMessage,
         finish_reason: finishReason,
       }],
-      usage: {
-        prompt_tokens: response.usage.input_tokens,
-        completion_tokens: response.usage.output_tokens,
-        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
-      },
+      usage: (() => {
+        const u = response.usage as Record<string, unknown>;
+        const cacheRead = u["cache_read_input_tokens"] as number ?? 0;
+        const cacheCreate = u["cache_creation_input_tokens"] as number ?? 0;
+        const base: Record<string, unknown> = {
+          prompt_tokens: response.usage.input_tokens,
+          completion_tokens: response.usage.output_tokens,
+          total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+        };
+        if (cacheRead > 0 || cacheCreate > 0) {
+          base["cache_read_input_tokens"] = cacheRead;
+          base["cache_creation_input_tokens"] = cacheCreate;
+          base["prompt_tokens_details"] = { cached_tokens: cacheRead };
+        }
+        return base;
+      })(),
     });
   } catch (err: unknown) {
     const { status, message } = extractUpstreamError(err);

@@ -132,6 +132,8 @@ async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
       const id = `chatcmpl-${Date.now()}`;
       let inThinking = false;
       let inputTokens = 0;
+      let cacheReadTokens = 0;
+      let cacheCreationTokens = 0;
       const blockIdxToToolIdx: Record<number, number> = {};
       let toolCallCount = 0;
 
@@ -146,6 +148,8 @@ async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
       for await (const event of stream) {
         if (event.type === "message_start") {
           inputTokens = event.message.usage?.input_tokens ?? 0;
+          cacheReadTokens = (event.message.usage as Record<string, unknown>)?.["cache_read_input_tokens"] as number ?? 0;
+          cacheCreationTokens = (event.message.usage as Record<string, unknown>)?.["cache_creation_input_tokens"] as number ?? 0;
 
         } else if (event.type === "content_block_start") {
           const block = event.content_block;
@@ -184,10 +188,17 @@ async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
           const stopReason = event.delta.stop_reason;
           const finishReason = stopReason === "tool_use" ? "tool_calls" : stopReason === "end_turn" ? "stop" : (stopReason ?? "stop");
           const outputTokens = event.usage?.output_tokens ?? 0;
-          appendJobChunk(job, {
-            ...chunk({}, finishReason),
-            usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
-          });
+          const jobUsage: Record<string, unknown> = {
+            prompt_tokens: inputTokens,
+            completion_tokens: outputTokens,
+            total_tokens: inputTokens + outputTokens,
+          };
+          if (cacheReadTokens > 0 || cacheCreationTokens > 0) {
+            jobUsage["cache_read_input_tokens"] = cacheReadTokens;
+            jobUsage["cache_creation_input_tokens"] = cacheCreationTokens;
+            jobUsage["prompt_tokens_details"] = { cached_tokens: cacheReadTokens };
+          }
+          appendJobChunk(job, { ...chunk({}, finishReason), usage: jobUsage });
         }
       }
 
