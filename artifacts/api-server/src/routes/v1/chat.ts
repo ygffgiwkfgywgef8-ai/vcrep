@@ -4,6 +4,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
 import { authMiddleware } from "../../middlewares/auth";
 import { isModelEnabled } from "../../lib/modelGroups";
+import {
+  buildPromptToolsInstruction,
+  parsePromptToolsResponse,
+  buildCompletionFromPromptTools,
+  type PromptTool,
+} from "../../lib/promptTools";
 
 // Fetch a remote image URL and return a base64 data URI
 async function fetchImageAsBase64(url: string): Promise<string> {
@@ -198,7 +204,11 @@ function oaiContentToAnthropic(
     if (part.type === "text" && typeof (part as { text?: string }).text === "string") {
       const text = (part as { text: string }).text;
       if (text.length === 0) continue; // Anthropic rejects empty text blocks
-      blocks.push({ type: "text", text });
+      // Preserve cache_control if present (e.g. for Anthropic prompt caching breakpoints)
+      const cc = (part as Record<string, unknown>)["cache_control"];
+      const block: Record<string, unknown> = { type: "text", text };
+      if (cc !== undefined) block["cache_control"] = cc;
+      blocks.push(block as Anthropic.ContentBlockParam);
     } else if (part.type === "image_url") {
       const { url } = (part as { type: "image_url"; image_url: { url: string } }).image_url;
       if (url.startsWith("data:")) {
@@ -217,10 +227,10 @@ function oaiContentToAnthropic(
 }
 
 function convertMessagesToAnthropic(messages: OAIMessage[]): {
-  system: string | undefined;
+  system: string | Anthropic.TextBlockParam[] | undefined;
   messages: Anthropic.MessageParam[];
 } {
-  let system: string | undefined;
+  let system: string | Anthropic.TextBlockParam[] | undefined;
   const converted: Anthropic.MessageParam[] = [];
 
   // We may need to merge consecutive tool results into a single user message
@@ -237,10 +247,25 @@ function convertMessagesToAnthropic(messages: OAIMessage[]): {
   for (const msg of messages) {
     // -- system ------------------------------------------------------
     if (msg.role === "system") {
-      system = typeof msg.content === "string" ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.filter(p => (p as { type: string }).type === "text").map(p => (p as { text: string }).text).join("\n")
-          : "";
+      if (typeof msg.content === "string") {
+        system = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        // If any block carries cache_control, preserve as TextBlockParam[] so
+        // Anthropic's caching breakpoints are respected.
+        const hasCache = msg.content.some(
+          (p) => (p as Record<string, unknown>)["cache_control"] !== undefined,
+        );
+        if (hasCache) {
+          system = oaiContentToAnthropic(msg.content) as Anthropic.TextBlockParam[];
+        } else {
+          system = msg.content
+            .filter((p) => (p as { type: string }).type === "text")
+            .map((p) => (p as { text: string }).text)
+            .join("\n");
+        }
+      } else {
+        system = "";
+      }
       continue;
     }
 
@@ -530,6 +555,8 @@ async function handleClaudeStream(
   if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: getThinkingBudget(maxTokens) };
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
+  // Top-level cache_control for automatic Anthropic prompt caching (requires Anthropic provider)
+  if (body["cache_control"]) params["cache_control"] = body["cache_control"];
 
   const id = `chatcmpl-${Date.now()}`;
   let inThinking = false;
@@ -683,6 +710,7 @@ async function handleClaudeNonStream(
   if (thinkingEnabled) params["thinking"] = { type: "enabled", budget_tokens: getThinkingBudget(maxTokens) };
   if (anthropicTools) params["tools"] = anthropicTools;
   if (anthropicToolChoice) params["tool_choice"] = anthropicToolChoice;
+  if (body["cache_control"]) params["cache_control"] = body["cache_control"];
 
   const ka = startNonStreamKeepalive(res);
   try {
@@ -1117,6 +1145,162 @@ async function handleOpenAINonStream(
 }
 
 // ----------------------------------------------------------------------
+// Prompt-based tool calling fallback
+// Triggered by `"x_use_prompt_tools": true` in the request body.
+// Works for any model/route. Injects a structured system prompt with the
+// tool schema, calls the model without native tool_calls, then parses the
+// JSON response and returns it in the standard OpenAI tool_calls format.
+// ----------------------------------------------------------------------
+
+async function handlePromptTools(
+  _req: Request,
+  res: Response,
+  originalBody: ChatBody,
+): Promise<void> {
+  const { model, messages, tools, stream } = originalBody;
+
+  const toolInstruction = buildPromptToolsInstruction((tools ?? []) as PromptTool[]);
+
+  // Merge tool instruction into the existing system message (or create one)
+  const sysMsg = messages.find((m) => m.role === "system");
+  const existingSystem =
+    sysMsg
+      ? typeof sysMsg.content === "string"
+        ? sysMsg.content
+        : Array.isArray(sysMsg.content)
+          ? (sysMsg.content as OAIContentPart[])
+              .filter((p) => (p as { type: string }).type === "text")
+              .map((p) => (p as { text: string }).text)
+              .join("\n")
+          : ""
+      : "";
+  const augmentedSystem = existingSystem
+    ? `${existingSystem}\n\n${toolInstruction}`
+    : toolInstruction;
+
+  // Build message list: replace system, keep everything else
+  const augmentedMessages: OAIMessage[] = [
+    { role: "system", content: augmentedSystem },
+    ...messages.filter((m) => m.role !== "system"),
+  ];
+
+  // Call the upstream model without tools (non-streaming internally)
+  let responseText = "";
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  const isClaude = model.startsWith("claude-");
+  const isGemini = model.startsWith("gemini-");
+  const isOpenRouterModel = !isClaude && !isGemini && model.includes("/");
+
+  try {
+    if (isClaude) {
+      const { baseModel, thinkingEnabled } = stripClaudeSuffix(model);
+      const modelMax = getClaudeMaxTokens(baseModel);
+      const maxTokens = Math.min(
+        originalBody.max_tokens && originalBody.max_tokens > 0 ? originalBody.max_tokens : modelMax,
+        modelMax,
+      );
+      const { system, messages: anthropicMessages } = convertMessagesToAnthropic(augmentedMessages);
+      const p: Record<string, unknown> = {
+        model: baseModel,
+        max_tokens: maxTokens,
+        messages: anthropicMessages,
+        stream: false,
+      };
+      if (system) p["system"] = system;
+      if (thinkingEnabled) p["thinking"] = { type: "enabled", budget_tokens: getThinkingBudget(maxTokens) };
+      const resp = await anthropic.messages.create(p as Anthropic.MessageCreateParamsNonStreaming);
+      responseText = resp.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { text: string }).text)
+        .join("");
+      promptTokens = resp.usage.input_tokens;
+      completionTokens = resp.usage.output_tokens;
+
+    } else if (isGemini) {
+      const { baseModel, thinkingEnabled } = stripGeminiSuffix(model);
+      const { systemInstruction, contents } = convertMessagesToGemini(augmentedMessages);
+      const config: Record<string, unknown> = { maxOutputTokens: originalBody.max_tokens ?? 65536 };
+      if (systemInstruction) config["systemInstruction"] = systemInstruction;
+      if (thinkingEnabled) config["thinkingConfig"] = { thinkingBudget: -1 };
+      const resp = await gemini.models.generateContent({
+        model: baseModel,
+        contents,
+        config: config as Parameters<typeof gemini.models.generateContent>[0]["config"],
+      });
+      responseText = resp.text ?? "";
+      promptTokens = resp.usageMetadata?.promptTokenCount ?? 0;
+      completionTokens = resp.usageMetadata?.candidatesTokenCount ?? 0;
+
+    } else {
+      const client = isOpenRouterModel ? openrouter : openai;
+      const resp = await client.chat.completions.create({
+        model,
+        messages: augmentedMessages as OpenAI.ChatCompletionMessageParam[],
+        stream: false,
+        ...(originalBody.max_tokens !== undefined && { max_tokens: originalBody.max_tokens }),
+        ...(originalBody.temperature !== undefined && { temperature: originalBody.temperature }),
+        ...(originalBody.top_p !== undefined && { top_p: originalBody.top_p }),
+      });
+      responseText = resp.choices[0]?.message?.content ?? "";
+      promptTokens = resp.usage?.prompt_tokens ?? 0;
+      completionTokens = resp.usage?.completion_tokens ?? 0;
+    }
+  } catch (err: unknown) {
+    const { status, message } = extractUpstreamError(err);
+    if (!res.headersSent) res.status(status);
+    if (!res.writableEnded) res.end(JSON.stringify({ error: { message, type: "upstream_error" } }));
+    return;
+  }
+
+  const parsed = parsePromptToolsResponse(responseText);
+  const completion = buildCompletionFromPromptTools(parsed, model, {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+  });
+
+  if (stream) {
+    const id = completion["id"] as string;
+    const created = completion["created"] as number;
+    const choice = (completion["choices"] as Array<Record<string, unknown>>)[0];
+    const finishReason = choice["finish_reason"] as string;
+
+    setSseHeaders(res);
+
+    if (parsed.isToolCall && parsed.calls) {
+      // Role chunk
+      sseWrite(res, makeChunk(id, model, { role: "assistant", content: null }));
+      // Tool call chunks
+      for (const [i, call] of parsed.calls.entries()) {
+        sseWrite(res, makeChunk(id, model, {
+          tool_calls: [{ index: i, id: call.id, type: "function", function: { name: call.name, arguments: "" } }],
+        }));
+        sseWrite(res, makeChunk(id, model, {
+          tool_calls: [{ index: i, function: { arguments: call.arguments } }],
+        }));
+      }
+    } else {
+      sseWrite(res, makeChunk(id, model, { role: "assistant", content: "" }));
+      sseWrite(res, makeChunk(id, model, { content: parsed.content }));
+    }
+
+    // Final stop chunk + usage
+    sseWrite(res, {
+      ...makeChunk(id, model, {}, finishReason),
+      usage: completion["usage"],
+    });
+    if (!res.writableEnded) {
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }
+  } else {
+    res.setHeader("Content-Type", "application/json");
+    if (!res.writableEnded) res.end(JSON.stringify(completion));
+  }
+}
+
+// ----------------------------------------------------------------------
 // Embeddings route
 // Proxies /v1/embeddings to OpenRouter (model contains "/") or OpenAI.
 // The entire request body is forwarded as-is so non-standard input formats
@@ -1197,6 +1381,15 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
           code: "model_disabled",
         },
       });
+      return;
+    }
+
+    // Prompt-based tool calling fallback — intercept before native routing.
+    // Activated by `"x_use_prompt_tools": true` in the request body.
+    // Strips `tools` from the upstream call and teaches the model via a
+    // system-prompt injection instead, enabling tool calling on any model.
+    if ((body as Record<string, unknown>)["x_use_prompt_tools"] === true && body.tools?.length) {
+      await handlePromptTools(req, res, body);
       return;
     }
 
