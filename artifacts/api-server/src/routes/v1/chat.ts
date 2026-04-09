@@ -8,6 +8,7 @@ import { isModelEnabled } from "../../lib/modelGroups";
 // Fetch a remote image URL and return a base64 data URI
 async function fetchImageAsBase64(url: string): Promise<string> {
   const res = await fetch(url, {
+    signal: AbortSignal.timeout(30_000), // don't let a slow image host hang the request indefinitely
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; AI-Proxy/1.0)",
       "Accept": "image/*,*/*;q=0.8",
@@ -419,7 +420,17 @@ function makeChunk(
 }
 
 function sseWrite(res: Response, data: unknown) {
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  if (res.writableEnded) return; // client already disconnected
+  let json: string;
+  try {
+    json = JSON.stringify(data);
+  } catch {
+    // Circular refs or BigInt in upstream payload — emit a safe error chunk instead
+    json = JSON.stringify({ error: { message: "Response serialization error", type: "proxy_error" } });
+  }
+  try {
+    res.write(`data: ${json}\n\n`);
+  } catch { /* socket closed between writableEnded check and write — ignore */ }
 }
 
 function setSseHeaders(res: Response) {
@@ -474,9 +485,10 @@ async function handleClaudeStream(
   const messages = await resolveImageUrls(body.messages);
   const { baseModel, thinkingEnabled, thinkingVisible } = stripClaudeSuffix(model);
   const modelMax = getClaudeMaxTokens(baseModel);
-  // Use caller's max_tokens if provided; otherwise use the model's maximum.
-  // No artificial cap -- pass the value straight to Anthropic.
-  const maxTokens = (body.max_tokens && body.max_tokens > 0) ? body.max_tokens : modelMax;
+  // Clamp caller value to the model's hard limit so Anthropic never returns a 422.
+  // If the caller omitted max_tokens entirely, default to the model's maximum.
+  const rawMaxTokens = body.max_tokens && body.max_tokens > 0 ? body.max_tokens : modelMax;
+  const maxTokens = Math.min(rawMaxTokens, modelMax);
 
   const { system, messages: anthropicMessages } = convertMessagesToAnthropic(messages);
 
@@ -635,9 +647,9 @@ async function handleClaudeNonStream(
   const messages = await resolveImageUrls(body.messages);
   const { baseModel, thinkingEnabled, thinkingVisible } = stripClaudeSuffix(model);
   const modelMax = getClaudeMaxTokens(baseModel);
-  // Use caller's max_tokens if provided; otherwise use the model's maximum.
-  // No artificial cap -- pass the value straight to Anthropic.
-  const maxTokens = (body.max_tokens && body.max_tokens > 0) ? body.max_tokens : modelMax;
+  // Clamp caller value to the model's hard limit so Anthropic never returns a 422.
+  const rawMaxTokens = body.max_tokens && body.max_tokens > 0 ? body.max_tokens : modelMax;
+  const maxTokens = Math.min(rawMaxTokens, modelMax);
 
   const { system, messages: anthropicMessages } = convertMessagesToAnthropic(messages);
 
@@ -784,7 +796,9 @@ async function handleGeminiStream(
     let outputTokens = 0;
 
     for await (const chunk of stream) {
-      const text = chunk.text;
+      // chunk.text is a getter that can throw on safety blocks or malformed candidates
+      let text: string | undefined;
+      try { text = chunk.text ?? undefined; } catch { /* safety/error block — skip text */ }
       if (text) {
         sseWrite(res, makeChunk(id, model, { content: text }));
       }
@@ -1113,12 +1127,32 @@ router.post("/chat/completions", authMiddleware, async (req: Request, res: Respo
     const body = req.body as ChatBody;
     const { model, messages, stream } = body;
 
-    if (!model || !messages) {
+    // ── strict input validation ──────────────────────────────────────────────
+    if (typeof model !== "string" || !model.trim()) {
       res.status(400).json({
-        error: { message: "model and messages are required", type: "invalid_request_error" },
+        error: { message: "'model' must be a non-empty string", type: "invalid_request_error" },
       });
       return;
     }
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      res.status(400).json({
+        error: { message: "'messages' must be a non-empty array", type: "invalid_request_error" },
+      });
+      return;
+    }
+
+    // Ensure each message is an object with a string role — reject early rather than crash later
+    const badMsg = messages.find(
+      (m) => !m || typeof m !== "object" || typeof (m as { role?: unknown }).role !== "string"
+    );
+    if (badMsg !== undefined) {
+      res.status(400).json({
+        error: { message: "Each message must be an object with a string 'role' field", type: "invalid_request_error" },
+      });
+      return;
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     if (!isModelEnabled(model)) {
       res.status(403).json({
