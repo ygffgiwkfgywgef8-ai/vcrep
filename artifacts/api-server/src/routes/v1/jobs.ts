@@ -41,7 +41,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import authMiddleware from "../../middlewares/auth.js";
+import { authMiddleware } from "../../middlewares/auth.js";
 import {
   createJob,
   getJob,
@@ -51,30 +51,24 @@ import {
   streamJobToResponse,
   parseLastEventId,
 } from "../../lib/jobQueue.js";
-import {
-  stripClaudeSuffix,
-  getClaudeMaxTokens,
-  getThinkingBudget,
-} from "../v1/chat.js";
+import { isModelEnabled } from "../../lib/modelGroups.js";
 
-// Re-use the anthropic / gemini / openrouter / openai clients from chat.ts
-// They are module-level singletons — import the named exports.
 import {
   anthropic,
   gemini,
   openrouter,
   openai,
+  stripClaudeSuffix,
+  getClaudeMaxTokens,
+  getThinkingBudget,
   convertMessagesToAnthropic,
   convertMessagesToGemini,
   convertToolsToAnthropic,
   convertToolChoiceToAnthropic,
-  oaiContentToAnthropic,
   resolveImageUrls,
   stripGeminiSuffix,
-  isModelEnabled,
   type ChatBody,
-  type OAIMessage,
-} from "../v1/chat.js";
+} from "./chat.js";
 
 import type Anthropic from "@anthropic-ai/sdk";
 import type OpenAI from "openai";

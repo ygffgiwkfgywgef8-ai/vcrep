@@ -30,7 +30,7 @@ async function fetchImageAsBase64(url: string): Promise<string> {
 
 // Convert image_url parts: replace remote URLs with base64 data URIs
 // so the Replit AI Integrations proxy doesn't need to fetch external URLs itself
-async function resolveImageUrls(messages: OAIMessage[]): Promise<OAIMessage[]> {
+export async function resolveImageUrls(messages: OAIMessage[]): Promise<OAIMessage[]> {
   return Promise.all(
     messages.map(async (msg) => {
       if (!Array.isArray(msg.content)) return msg;
@@ -60,22 +60,22 @@ async function resolveImageUrls(messages: OAIMessage[]): Promise<OAIMessage[]> {
 
 const router: IRouter = Router();
 
-const openai = new OpenAI({
+export const openai = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ?? "dummy",
   baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
 });
 
-const anthropic = new Anthropic({
+export const anthropic = new Anthropic({
   apiKey: process.env["AI_INTEGRATIONS_ANTHROPIC_API_KEY"] ?? "dummy",
   baseURL: process.env["AI_INTEGRATIONS_ANTHROPIC_BASE_URL"],
 });
 
-const gemini = new GoogleGenAI({
+export const gemini = new GoogleGenAI({
   apiKey: process.env["AI_INTEGRATIONS_GEMINI_API_KEY"] ?? "dummy",
   httpOptions: { baseUrl: process.env["AI_INTEGRATIONS_GEMINI_BASE_URL"] },
 });
 
-const openrouter = new OpenAI({
+export const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"] ?? "dummy",
   baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
 });
@@ -93,16 +93,16 @@ const CLAUDE_MAX_TOKENS: Record<string, number> = {
   "claude-opus-4-6": 64000,
 };
 
-function getClaudeMaxTokens(model: string): number {
+export function getClaudeMaxTokens(model: string): number {
   return CLAUDE_MAX_TOKENS[model] ?? 200000;
 }
 
 /** Max thinking budget: as large as possible while leaving at least 1024 for output. */
-function getThinkingBudget(maxTokens: number): number {
+export function getThinkingBudget(maxTokens: number): number {
   return Math.max(1024, maxTokens - 1024);
 }
 
-function stripClaudeSuffix(model: string): {
+export function stripClaudeSuffix(model: string): {
   baseModel: string;
   thinkingEnabled: boolean;
   thinkingVisible: boolean;
@@ -133,7 +133,7 @@ type OAIContentPart =
   | { type: "tool_result"; tool_use_id?: string; content?: string } // not real OAI but keep safe
   | Record<string, unknown>;
 
-interface OAIMessage {
+export interface OAIMessage {
   role: string;
   content: string | OAIContentPart[] | null;
   name?: string;
@@ -160,7 +160,7 @@ type OAIToolChoice =
   | "required"
   | { type: "function"; function: { name: string } };
 
-interface ChatBody {
+export interface ChatBody {
   model: string;
   messages: OAIMessage[];
   stream?: boolean;
@@ -194,7 +194,7 @@ interface ChatBody {
 // Message conversion: OpenAI -> Anthropic
 // ----------------------------------------------------------------------
 
-function oaiContentToAnthropic(
+export function oaiContentToAnthropic(
   content: string | OAIContentPart[] | null
 ): Anthropic.ContentBlockParam[] {
   if (content === null || content === undefined) return [];
@@ -230,7 +230,7 @@ function oaiContentToAnthropic(
   return blocks;
 }
 
-function convertMessagesToAnthropic(messages: OAIMessage[]): {
+export function convertMessagesToAnthropic(messages: OAIMessage[]): {
   system: string | Anthropic.TextBlockParam[] | undefined;
   messages: Anthropic.MessageParam[];
 } {
@@ -343,7 +343,7 @@ function convertMessagesToAnthropic(messages: OAIMessage[]): {
 // Tool conversion: OpenAI tools -> Anthropic tools
 // ----------------------------------------------------------------------
 
-function convertToolsToAnthropic(tools: OAITool[]): Anthropic.Tool[] {
+export function convertToolsToAnthropic(tools: OAITool[]): Anthropic.Tool[] {
   return tools.map((t) => ({
     name: t.function.name,
     description: t.function.description,
@@ -351,7 +351,7 @@ function convertToolsToAnthropic(tools: OAITool[]): Anthropic.Tool[] {
   }));
 }
 
-function convertToolChoiceToAnthropic(
+export function convertToolChoiceToAnthropic(
   tc: OAIToolChoice | undefined
 ): Anthropic.ToolChoiceParam | undefined {
   if (!tc || tc === "none") return undefined;
@@ -367,7 +367,7 @@ function convertToolChoiceToAnthropic(
 // Gemini model config helpers
 // ----------------------------------------------------------------------
 
-function stripGeminiSuffix(model: string): { baseModel: string; thinkingEnabled: boolean } {
+export function stripGeminiSuffix(model: string): { baseModel: string; thinkingEnabled: boolean } {
   if (model.endsWith("-thinking-visible")) {
     return { baseModel: model.slice(0, -"-thinking-visible".length), thinkingEnabled: true };
   }
@@ -396,7 +396,7 @@ function oaiContentToGeminiParts(content: string | OAIContentPart[] | null): Gem
   return parts.length > 0 ? parts : [{ text: "" }];
 }
 
-function convertMessagesToGemini(messages: OAIMessage[]): {
+export function convertMessagesToGemini(messages: OAIMessage[]): {
   systemInstruction: string | undefined;
   contents: GeminiContent[];
 } {
