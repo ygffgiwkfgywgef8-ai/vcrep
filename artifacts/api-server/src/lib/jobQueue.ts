@@ -76,7 +76,7 @@ export function getJob(id: string): Job | undefined {
 export function appendJobChunk(job: Job, data: unknown): void {
   const json = JSON.stringify(data);
   job.chunks.push(json);
-  job.emitter.emit("chunk", job.chunks.length - 1);
+  job.emitter.emit("chunk");
 }
 
 /** Mark a job as successfully finished. */

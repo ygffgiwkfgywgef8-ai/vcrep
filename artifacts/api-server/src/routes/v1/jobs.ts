@@ -43,6 +43,7 @@
 import { Router, type Request, type Response } from "express";
 import { authMiddleware } from "../../middlewares/auth.js";
 import {
+  type Job,
   createJob,
   getJob,
   appendJobChunk,
@@ -94,10 +95,7 @@ function setSseHeaders(res: Response) {
 // to the job buffer instead of directly to the HTTP response.
 // ---------------------------------------------------------------------------
 
-async function runJobBackground(body: ChatBody, jobId: string): Promise<void> {
-  const job = getJob(jobId);
-  if (!job) return;
-
+async function runJobBackground(body: ChatBody, job: Job): Promise<void> {
   const { model } = body;
 
   try {
@@ -233,7 +231,7 @@ async function runJobBackground(body: ChatBody, jobId: string): Promise<void> {
       });
 
     // ── OpenRouter ────────────────────────────────────────────────────────
-    } else if (!model.startsWith("gemini-") && !model.startsWith("claude-") && model.includes("/")) {
+    } else if (model.includes("/")) {
       const { model: _m, messages: _msgs, stream: _s, ...passThrough } = body;
       const verbosityDefault = model === "anthropic/claude-opus-4.6" && !("verbosity" in passThrough)
         ? { verbosity: "max" } : {};
@@ -304,7 +302,7 @@ router.post("/", authMiddleware, async (req: Request, res: Response) => {
   const job = createJob(model);
 
   // Start background — do NOT await.  The job keeps running after we respond.
-  runJobBackground(body, job.id).catch(() => { /* errors are captured in failJob */ });
+  runJobBackground(body, job).catch(() => { /* errors are captured in failJob */ });
 
   res.json({ job_id: job.id, status: "running", model });
 });
